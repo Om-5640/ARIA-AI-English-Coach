@@ -8,6 +8,7 @@
     wsBackoffMs: 600,
     wsTimer: null,
     playerId: getOrCreatePlayerId(),
+    sessionToken: getStoredSessionToken(),
     room: null,
     players: [],
     events: [],
@@ -61,9 +62,22 @@
     }
   }
 
+  function getStoredSessionToken() {
+    try { return localStorage.getItem('aria_session_token') || ''; } catch (_) { return ''; }
+  }
+
+  function storeSessionToken(token) {
+    PROD.sessionToken = token || '';
+    try { if (token) localStorage.setItem('aria_session_token', token); else localStorage.removeItem('aria_session_token'); } catch (_) {}
+  }
+
   function api(path, options = {}) {
     const headers = { ...(options.headers || {}) };
     if (!(options.body instanceof FormData)) headers['Content-Type'] = headers['Content-Type'] || 'application/json';
+    // Attach session token for all authenticated room/webrtc endpoints
+    if (PROD.sessionToken && /^\/api\/(rooms\/|webrtc\/rooms\/)/.test(path)) {
+      headers['Authorization'] = 'Bearer ' + PROD.sessionToken;
+    }
     return originalFetch(path, { ...options, headers }).then(async res => {
       const text = await res.text();
       const data = text ? JSON.parse(text) : {};
@@ -233,7 +247,7 @@
 
   function subscribeRoom(code) {
     if (!PROD.wsReady || !PROD.ws) return;
-    PROD.ws.send(JSON.stringify({ type: 'room.subscribe', roomCode: code, playerId: PROD.playerId }));
+    PROD.ws.send(JSON.stringify({ type: 'room.subscribe', roomCode: code, playerId: PROD.playerId, sessionToken: PROD.sessionToken }));
   }
 
   function handleRealtimeMessage(msg) {
@@ -259,6 +273,7 @@
         method: 'POST',
         body: JSON.stringify({ mode, displayName: currentDisplayName(), playerId: PROD.playerId })
       });
+      storeSessionToken(data.sessionToken);
       PROD.room = data.room;
       PROD.players = data.players || [];
       PROD.events = data.events || [];
@@ -279,6 +294,7 @@
         method: 'POST',
         body: JSON.stringify({ displayName: currentDisplayName(), playerId: PROD.playerId })
       });
+      storeSessionToken(data.sessionToken);
       PROD.room = data.room;
       PROD.players = data.players || [];
       PROD.events = data.events || [];
@@ -351,6 +367,7 @@
         await api('/api/rooms/' + PROD.room.code + '/leave', { method: 'POST', body: JSON.stringify({ playerId: PROD.playerId }) });
       }
     } catch (_) {}
+    storeSessionToken('');
     PROD.room = null;
     PROD.players = [];
     PROD.events = [];
@@ -514,6 +531,7 @@
         method: 'POST',
         body: JSON.stringify({ mode: mode === 'voice' ? 'call-voice' : 'call-video', displayName: currentDisplayName(), playerId: PROD.playerId })
       });
+      storeSessionToken(data.sessionToken);
       PROD.call.room = data.room;
       PROD.call.polite = false;
       // Get media before subscribing — ensures we're ready before the hub can trigger peer connection
@@ -543,6 +561,7 @@
         method: 'POST',
         body: JSON.stringify({ displayName: currentDisplayName(), playerId: PROD.playerId })
       });
+      storeSessionToken(data.sessionToken);
       PROD.call.room = data.room;
       PROD.call.mode = data.room.mode === 'call-voice' ? 'voice' : 'video';
       PROD.call.polite = true;
@@ -724,9 +743,10 @@
 
   async function sendSignal(type, payload, toPlayerId) {
     if (!PROD.call.room?.code) return;
+    // playerId is required by the auth middleware; fromPlayerId is derived server-side from the token
     await api('/api/webrtc/rooms/' + PROD.call.room.code + '/signal', {
       method: 'POST',
-      body: JSON.stringify({ fromPlayerId: PROD.playerId, toPlayerId, type, payload })
+      body: JSON.stringify({ playerId: PROD.playerId, toPlayerId, type, payload })
     });
   }
 
@@ -782,6 +802,7 @@
     cleanupStream(PROD.call.localStream);
     // Do NOT stop remote tracks — they belong to the remote peer's sender
     const rv2 = document.getElementById('remoteVideo'); if (rv2) rv2.srcObject = null;
+    storeSessionToken('');
     window.localStream = null;
     PROD.call.pc = null;
     PROD.call.localStream = null;

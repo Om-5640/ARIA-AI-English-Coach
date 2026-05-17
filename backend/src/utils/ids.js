@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { customAlphabet } from 'nanoid';
 
 const digits = customAlphabet('0123456789', 6);
@@ -13,4 +14,8 @@ export function newPlayerId() {
 
 export function cleanRoomCode(code) {
   return String(code || '').replace(/\D/g, '').slice(0, 6);
+}
+
+export function newSessionToken() {
+  return randomBytes(32).toString('hex');
 }
