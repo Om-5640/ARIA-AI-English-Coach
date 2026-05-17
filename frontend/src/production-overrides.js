@@ -513,7 +513,7 @@
     if (labels[0]) labels[0].textContent = 'Call code — share this with your partner';
     if (labels[1]) labels[1].textContent = 'Join a friend call';
     const input = document.getElementById('peerAnswerInput');
-    if (input) { input.placeholder = 'Enter 6-digit call code'; input.rows = 1; input.style.fontFamily = 'Plus Jakarta Sans, sans-serif'; }
+    if (input) { input.placeholder = 'Enter 8-digit call code'; input.rows = 1; input.style.fontFamily = 'Plus Jakarta Sans, sans-serif'; }
     const box = document.getElementById('peerOfferBox');
     if (box) { box.rows = 1; box.style.fontFamily = 'Plus Jakarta Sans, sans-serif'; box.style.fontSize = '20px'; box.style.textAlign = 'center'; box.style.letterSpacing = '5px'; }
     const btn = peerSection.querySelector('[onclick="acceptOffer()"]');
