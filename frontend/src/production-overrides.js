@@ -287,8 +287,8 @@
   }
 
   async function productionJoinRoom() {
-    const code = (document.getElementById('joinCodeInput')?.value || '').replace(/\D/g, '').slice(0, 6);
-    if (code.length !== 6) { alert('Please enter a 6-digit room code.'); return; }
+    const code = (document.getElementById('joinCodeInput')?.value || '').replace(/\D/g, '').slice(0, 8);
+    if (code.length !== 8) { alert('Please enter an 8-digit room code.'); return; }
     try {
       const data = await api('/api/rooms/' + code + '/join', {
         method: 'POST',
@@ -546,8 +546,8 @@
   }
 
   async function productionJoinPeerCall() {
-    const code = (document.getElementById('peerAnswerInput')?.value || '').replace(/\D/g, '').slice(0, 6);
-    if (code.length !== 6) { alert('Enter the 6-digit call code from your friend.'); return; }
+    const code = (document.getElementById('peerAnswerInput')?.value || '').replace(/\D/g, '').slice(0, 8);
+    if (code.length !== 8) { alert('Enter the 8-digit call code from your friend.'); return; }
     try {
       // Only tear down a prior call — do NOT touch the UI so peerVideoArea stays visible
       if (PROD.call.room) await productionEndPeerCall('Joining another call', true);
@@ -798,6 +798,12 @@
     try { if (PROD.call.room?.code && PROD.call.remotePlayerId) await sendSignal('bye', { reason: reason || 'Call ended' }, PROD.call.remotePlayerId); } catch (_) {}
     try { if (PROD.call.room?.code) await api('/api/rooms/' + PROD.call.room.code + '/leave', { method: 'POST', body: JSON.stringify({ playerId: PROD.playerId }) }); } catch (_) {}
     try { PROD.call.pc?.getSenders?.().forEach(s => { try { s.track?.stop(); } catch (_) {} }); } catch (_) {}
+    if (PROD.call.pc) {
+      PROD.call.pc.ontrack = null;
+      PROD.call.pc.onicecandidate = null;
+      PROD.call.pc.onconnectionstatechange = null;
+      PROD.call.pc.onnegotiationneeded = null;
+    }
     try { PROD.call.pc?.close(); } catch (_) {}
     cleanupStream(PROD.call.localStream);
     // Do NOT stop remote tracks — they belong to the remote peer's sender

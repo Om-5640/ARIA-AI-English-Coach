@@ -1,5 +1,6 @@
 import { WebSocketServer } from 'ws';
 import { logger } from '../utils/logger.js';
+import { LocalPubSub } from './pubsub.js';
 
 function safeSend(ws, message) {
   if (ws.readyState !== ws.OPEN) return;
@@ -7,12 +8,19 @@ function safeSend(ws, message) {
 }
 
 export class RealtimeHub {
-  constructor({ store }) {
+  constructor({ store, pubsub = null }) {
     this.store = store;
+    this.pubsub = pubsub;
     this.wss = null;
     this.clients = new Map(); // socketId -> {ws, playerId, rooms:Set<string>, alive:boolean}
     this.rooms = new Map(); // roomCode -> Set<socketId>
     this.nextId = 1;
+    if (pubsub) {
+      pubsub.onMessage((channel, message) => {
+        const roomCode = channel.startsWith('room:') ? channel.slice(5) : null;
+        if (roomCode) this._localBroadcast(roomCode, message);
+      });
+    }
   }
 
   attach(server) {
@@ -73,7 +81,7 @@ export class RealtimeHub {
       const playerId = String(message.playerId || '').trim();
       const sessionToken = String(message.sessionToken || '').trim();
 
-      if (!/^\d{6}$/.test(roomCode) || !playerId) {
+      if (!/^\d{8}$/.test(roomCode) || !playerId) {
         safeSend(client.ws, { type: 'error', error: 'Invalid room subscription.' });
         return;
       }
@@ -116,6 +124,14 @@ export class RealtimeHub {
   }
 
   broadcast(roomCode, message) {
+    if (this.pubsub && !(this.pubsub instanceof LocalPubSub)) {
+      this.pubsub.publish(`room:${roomCode}`, message);
+      return;
+    }
+    this._localBroadcast(roomCode, message);
+  }
+
+  _localBroadcast(roomCode, message) {
     const sockets = this.rooms.get(roomCode) || new Set();
     for (const socketId of sockets) {
       const client = this.clients.get(socketId);
@@ -132,7 +148,23 @@ export class RealtimeHub {
     return { room, players, events };
   }
 
+  async _cleanupGhostPlayers(roomCode) {
+    const sockets = this.rooms.get(roomCode) || new Set();
+    const activePids = new Set(
+      [...sockets].map(sid => this.clients.get(sid)?.playerId).filter(Boolean)
+    );
+    try {
+      const players = await this.store.listPlayers(roomCode);
+      await Promise.all(
+        players
+          .filter(p => p.connected && !activePids.has(p.playerId))
+          .map(p => this.store.updatePlayer(roomCode, p.playerId, { connected: false }).catch(() => {}))
+      );
+    } catch {}
+  }
+
   async broadcastSnapshot(roomCode) {
+    await this._cleanupGhostPlayers(roomCode);
     const snapshot = await this.buildSnapshot(roomCode);
     this.broadcast(roomCode, { type: 'room.snapshot', ...snapshot, serverTime: new Date().toISOString() });
     return snapshot;
@@ -144,6 +176,17 @@ export class RealtimeHub {
   }
 
   publishSignal(roomCode, signal) {
-    this.broadcast(roomCode, { type: 'webrtc.signal', signal, serverTime: new Date().toISOString() });
+    const msg = { type: 'webrtc.signal', signal, serverTime: new Date().toISOString() };
+    if (signal.toPlayerId && !(this.pubsub && !(this.pubsub instanceof LocalPubSub))) {
+      // Local mode: targeted delivery to specific socket
+      const sockets = this.rooms.get(roomCode) || new Set();
+      for (const socketId of sockets) {
+        const client = this.clients.get(socketId);
+        if (client?.playerId === signal.toPlayerId) { safeSend(client.ws, msg); return; }
+      }
+      return;
+    }
+    // Redis mode or no toPlayerId: room broadcast (clients filter by toPlayerId)
+    this.broadcast(roomCode, msg);
   }
 }
