@@ -16,6 +16,23 @@ function sanitizeMessages(messages) {
   })).filter(m => m.content.trim());
 }
 
+async function withRetry(fn, maxRetries = 2) {
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try { return await fn(); }
+    catch (err) {
+      lastErr = err;
+      const retryable = err.status === 429 || err.status >= 500;
+      if (retryable && attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 export async function proxyChatCompletion(body = {}) {
   const key = requireKey();
   const payload = {
@@ -25,14 +42,17 @@ export async function proxyChatCompletion(body = {}) {
     max_tokens: Number.isFinite(Number(body.max_tokens)) ? Math.min(1200, Math.max(1, Number(body.max_tokens))) : 500,
     response_format: body.response_format && typeof body.response_format === 'object' ? body.response_format : undefined
   };
-  const res = await fetch(`${GROQ_BASE}/chat/completions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
+  return withRetry(async () => {
+    const res = await fetch(`${GROQ_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(30000)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new HttpError(res.status, data?.error?.message || 'AI provider error.', 'ai_provider_error', data);
+    return data;
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new HttpError(res.status, data?.error?.message || 'AI provider error.', 'ai_provider_error', data);
-  return data;
 }
 
 export async function proxyTranscription(file) {
@@ -44,12 +64,16 @@ export async function proxyTranscription(file) {
   form.append('file', blob, file.originalname || 'audio.webm');
   form.append('model', process.env.GROQ_STT_MODEL || 'whisper-large-v3-turbo');
   form.append('language', 'en');
-  const res = await fetch(`${GROQ_BASE}/audio/transcriptions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}` },
-    body: form
+  return withRetry(async () => {
+    const res = await fetch(`${GROQ_BASE}/audio/transcriptions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}` },
+      body: form,
+      signal: AbortSignal.timeout(30000)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new HttpError(res.status, data?.error?.message || 'Transcription provider error.', 'stt_provider_error', data);
+    return data;
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new HttpError(res.status, data?.error?.message || 'Transcription provider error.', 'stt_provider_error', data);
-  return data;
 }
+

@@ -72,13 +72,15 @@
   }
 
   function api(path, options = {}) {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 15000);
     const headers = { ...(options.headers || {}) };
     if (!(options.body instanceof FormData)) headers['Content-Type'] = headers['Content-Type'] || 'application/json';
-    // Attach session token for all authenticated room/webrtc endpoints
     if (PROD.sessionToken && /^\/api\/(rooms\/|webrtc\/rooms\/)/.test(path)) {
       headers['Authorization'] = 'Bearer ' + PROD.sessionToken;
     }
-    return originalFetch(path, { ...options, headers }).then(async res => {
+    return originalFetch(path, { ...options, headers, signal: controller.signal }).then(async res => {
+      clearTimeout(tid);
       const text = await res.text();
       const data = text ? JSON.parse(text) : {};
       if (!res.ok || data.ok === false) {
@@ -89,21 +91,57 @@
         throw err;
       }
       return data;
+    }).catch(err => {
+      clearTimeout(tid);
+      if (err.name === 'AbortError') {
+        const t = new Error('Request timed out — check your connection.');
+        t.status = 408;
+        throw t;
+      }
+      throw err;
     });
   }
 
+  function showToast(message, type, durationMs) {
+    type = type || 'info';
+    durationMs = durationMs || 4000;
+    let container = document.getElementById('ariaToastContainer');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'ariaToastContainer';
+      container.style.cssText = 'position:fixed;bottom:calc(80px + env(safe-area-inset-bottom,0px));right:14px;z-index:10000;display:flex;flex-direction:column-reverse;gap:8px;max-width:300px;pointer-events:none';
+      document.body.appendChild(container);
+    }
+    const toast = document.createElement('div');
+    const cfg = {
+      error: ['#fff5f5', 'rgba(192,57,43,.28)', '#c0392b'],
+      success: ['#f0faf5', 'rgba(45,125,79,.22)', '#2d7d4f'],
+      warn: ['#fffbf0', 'rgba(212,130,10,.28)', '#b8720a'],
+      info: ['#fff', 'rgba(160,92,46,.2)', 'var(--text2)']
+    }[type] || ['#fff', 'rgba(160,92,46,.2)', 'var(--text2)'];
+    toast.style.cssText = 'background:' + cfg[0] + ';border:1px solid ' + cfg[1] + ';color:' + cfg[2] + ';padding:10px 14px;border-radius:11px;font-size:13px;font-family:Plus Jakarta Sans,sans-serif;line-height:1.45;box-shadow:0 4px 16px rgba(45,26,14,.1);opacity:0;transform:translateY(6px);transition:opacity .18s,transform .18s;pointer-events:auto;cursor:pointer;font-weight:500;word-break:break-word';
+    toast.textContent = message;
+    container.appendChild(toast);
+    requestAnimationFrame(() => { toast.style.opacity = '1'; toast.style.transform = 'translateY(0)'; });
+    const remove = () => { toast.style.opacity = '0'; toast.style.transform = 'translateY(6px)'; setTimeout(() => { try { toast.remove(); } catch (_) {} }, 200); };
+    const tid2 = setTimeout(remove, durationMs);
+    toast.addEventListener('click', () => { clearTimeout(tid2); remove(); }, { once: true });
+  }
+
   async function boot() {
-    // These are pure DOM/event-listener work — no backend needed, run immediately.
+    injectPremiumStyles();
     patchOnboarding();
     patchPeerUi();
     installLifecycleGuards();
+    // Defer intelligence injections until after first user interaction / screen render
+    setTimeout(() => { try { injectDashboardIntelligence(); injectContextualGreeting(); } catch (_) {} }, 800);
     try {
       PROD.config = await api('/api/config');
       await api('/api/health');
       connectRealtime();
-      showProductionNotice('Production realtime backend connected. API keys stay on the server.');
+      showProductionNotice('Connected');
     } catch (error) {
-      showProductionNotice('Backend not reachable — start the ARIA backend for realtime rooms, calls, and AI.', true);
+      showProductionNotice('Backend unreachable — realtime features paused.', true);
       console.warn('[ARIA production] boot failed', error);
     }
   }
@@ -144,7 +182,7 @@
       launchSession = async function productionLaunchSession() {
         const nameEl = document.getElementById('userName');
         const name = nameEl ? nameEl.value.trim() : '';
-        if (!name) { alert('Please enter your name!'); if (nameEl) nameEl.focus(); return; }
+        if (!name) { showToast('Please enter your name.', 'warn'); if (nameEl) nameEl.focus(); return; }
         GROQ_KEY = 'server-managed-ai-proxy';
         USER.name = name;
         USER.email = (document.getElementById('userEmail')?.value || '').trim().toLowerCase();
@@ -222,28 +260,33 @@
 
   function connectRealtime() {
     clearTimeout(PROD.wsTimer);
+    if (!PROD._wsRetries) PROD._wsRetries = 0;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(proto + '//' + location.host + (PROD.config?.realtimePath || '/realtime'));
     PROD.ws = ws;
     ws.onopen = () => {
       PROD.wsReady = true;
+      PROD._wsRetries = 0;
       PROD.wsBackoffMs = 600;
       if (PROD.room?.code) subscribeRoom(PROD.room.code);
       if (PROD.call.room?.code) subscribeRoom(PROD.call.room.code);
-      updateNetworkBadge('Realtime connected');
+      updateNetworkBadge('Connected');
     };
     ws.onmessage = event => {
+      PROD._wsLastMsg = Date.now();
       let msg;
       try { msg = JSON.parse(event.data); } catch (_) { return; }
       handleRealtimeMessage(msg);
     };
     ws.onclose = () => {
       PROD.wsReady = false;
-      updateNetworkBadge('Realtime reconnecting…', true);
+      PROD._wsRetries++;
+      const label = PROD._wsRetries > 3 ? 'Reconnecting (' + PROD._wsRetries + ')…' : 'Reconnecting…';
+      updateNetworkBadge(label, true);
       PROD.wsTimer = setTimeout(connectRealtime, PROD.wsBackoffMs);
-      PROD.wsBackoffMs = Math.min(PROD.wsBackoffMs * 1.7, 8000);
+      PROD.wsBackoffMs = Math.min(PROD.wsBackoffMs * 1.8, 30000);
     };
-    ws.onerror = () => updateNetworkBadge('Realtime connection issue', true);
+    ws.onerror = () => updateNetworkBadge('Connection issue', true);
   }
 
   function subscribeRoom(code) {
@@ -283,13 +326,13 @@
       subscribeRoom(data.room.code);
       applyCompeteSnapshot(data);
     } catch (error) {
-      alert('Could not create room: ' + error.message);
+      showToast('Could not create room: ' + error.message, 'error');
     }
   }
 
   async function productionJoinRoom() {
     const code = (document.getElementById('joinCodeInput')?.value || '').replace(/\D/g, '').slice(0, 8);
-    if (code.length !== 8) { alert('Please enter an 8-digit room code.'); return; }
+    if (code.length !== 8) { showToast('Please enter an 8-digit room code.', 'warn'); return; }
     try {
       const data = await api('/api/rooms/' + code + '/join', {
         method: 'POST',
@@ -311,7 +354,7 @@
       subscribeRoom(code);
       applyCompeteSnapshot(data);
     } catch (error) {
-      alert('Room join failed: ' + error.message);
+      showToast('Room join failed: ' + error.message, 'error');
     }
   }
 
@@ -326,7 +369,7 @@
         body: JSON.stringify({ playerId: PROD.playerId, type: 'chat', payload: { text } })
       });
     } catch (error) {
-      alert('Message failed: ' + error.message);
+      showToast('Message failed: ' + error.message, 'error');
     }
   }
 
@@ -336,7 +379,7 @@
     if (currentCompeteMode === 'debate' || PROD.room.mode === 'debate') {
       const topicEl = document.getElementById('debateTopicInput');
       const topic = (topicEl?.value || '').trim();
-      if (!topic) { alert('Please enter a debate topic before starting.'); return; }
+      if (!topic) { showToast('Please enter a debate topic before starting.', 'warn'); return; }
       body.topic = topic;
     }
     try {
@@ -345,7 +388,7 @@
         body: JSON.stringify(body)
       });
     } catch (error) {
-      alert('Could not start game: ' + error.message);
+      showToast('Could not start game: ' + error.message, 'error');
     }
   }
 
@@ -364,7 +407,7 @@
         return (p?.displayName || 'Player') + ': ' + e.payload.text;
       }).join('\n');
     if (!chatMessages) {
-      alert('No debate messages yet — have both players make arguments in the chat first.');
+      showToast('No debate messages yet — have both players argue in chat first.', 'warn');
       if (btn) { btn.disabled = false; btn.textContent = '⚖️ End Debate & Get AI Verdict'; }
       return;
     }
@@ -407,7 +450,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
       setTextSafe('liveResultText', 'Debate Complete!');
       setTextSafe('liveResultSub', 'AI judge\'s verdict has been posted in the chat above.');
     } catch (error) {
-      alert('Could not get verdict: ' + error.message);
+      showToast('Could not get verdict: ' + error.message, 'error');
       if (btn) { btn.disabled = false; btn.textContent = '⚖️ End Debate & Get AI Verdict'; }
     }
   }
@@ -421,14 +464,16 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     const opts = document.querySelectorAll('#liveOptions .q-opt');
     opts.forEach(o => { o.disabled = true; });
     try {
-      await api('/api/rooms/' + PROD.room.code + '/answer', {
+      const data = await api('/api/rooms/' + PROD.room.code + '/answer', {
         method: 'POST',
         body: JSON.stringify({ playerId: PROD.playerId, answerIdx: idx })
       });
+      // Apply snapshot from response immediately to avoid race with WS broadcast
+      if (data?.room) applyCompeteSnapshot(data);
     } catch (error) {
       PROD.answeredQuestions.delete(qIdx);
       opts.forEach(o => { o.disabled = false; });
-      alert('Answer rejected: ' + error.message);
+      showToast('Answer rejected: ' + error.message, 'error');
     }
   }
 
@@ -645,7 +690,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
 
   async function productionJoinPeerCall() {
     const code = (document.getElementById('peerAnswerInput')?.value || '').replace(/\D/g, '').slice(0, 8);
-    if (code.length !== 8) { alert('Enter the 8-digit call code from your friend.'); return; }
+    if (code.length !== 8) { showToast('Enter the 8-digit call code from your friend.', 'warn'); return; }
     try {
       // Only tear down a prior call — do NOT touch the UI so peerVideoArea stays visible
       if (PROD.call.room) await productionEndPeerCall('Joining another call', true);
@@ -668,8 +713,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
       applyCallSnapshot(data);
       subscribeRoom(code);
     } catch (error) {
-      // alert() is always visible regardless of whether peerVideoArea is shown or hidden
-      alert('Could not join call: ' + error.message);
+      showToast('Could not join call: ' + error.message, 'error');
       await productionEndPeerCall(error.message, true);
     }
   }
@@ -889,7 +933,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
   function copyPeerRoomCode() {
     const code = document.getElementById('peerOfferBox')?.value || PROD.call.room?.code || '';
     if (!code) return;
-    navigator.clipboard?.writeText(code).then(() => setPeerStatus('✅ Call code copied.')).catch(() => alert('Call code: ' + code));
+    navigator.clipboard?.writeText(code).then(() => setPeerStatus('✅ Call code copied.')).catch(() => showToast('Call code: ' + code, 'info', 8000));
   }
 
   async function productionEndPeerCall(reason, silent) {
@@ -938,8 +982,22 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
       productionEndPeerCall('Page closed', true);
       if (PROD.room?.code) api('/api/rooms/' + PROD.room.code + '/leave', { method: 'POST', body: JSON.stringify({ playerId: PROD.playerId }) }).catch(() => {});
     });
-    window.addEventListener('online', () => updateNetworkBadge('Back online'));
+    window.addEventListener('online', () => {
+      updateNetworkBadge('Back online');
+      if (!PROD.wsReady) {
+        PROD.wsBackoffMs = 600;
+        clearTimeout(PROD.wsTimer);
+        connectRealtime();
+      }
+    });
     window.addEventListener('offline', () => updateNetworkBadge('Offline — realtime paused', true));
+    window.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && !PROD.wsReady) {
+        PROD.wsBackoffMs = 600;
+        clearTimeout(PROD.wsTimer);
+        connectRealtime();
+      }
+    });
   }
 
   function updateNetworkBadge(text, warn) {
@@ -947,24 +1005,123 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     if (!el) {
       el = document.createElement('div');
       el.id = 'ariaProdNetBadge';
-      el.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:9999;padding:8px 11px;border-radius:999px;background:#fff;border:1px solid var(--border2);font-size:11px;color:var(--text2);box-shadow:0 4px 16px rgba(45,26,14,.08);opacity:.96;transition:opacity .2s';
+      el.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:9999;padding:7px 13px;border-radius:999px;background:rgba(255,255,255,.96);border:1px solid var(--border2);font-size:11px;font-weight:500;letter-spacing:.01em;color:var(--text2);box-shadow:0 2px 12px rgba(45,26,14,.08);opacity:.96;transition:opacity .3s,color .2s,border-color .2s;backdrop-filter:blur(6px)';
       document.body.appendChild(el);
     }
     el.textContent = text;
-    el.style.borderColor = warn ? 'rgba(192,57,43,.35)' : 'var(--border2)';
-    el.style.color = warn ? 'var(--red)' : 'var(--text2)';
+    el.style.borderColor = warn ? 'rgba(192,57,43,.32)' : 'rgba(160,92,46,.18)';
+    el.style.color = warn ? 'var(--red)' : 'var(--text3)';
+    el.style.opacity = '.96';
     clearTimeout(el._hideTimer);
-    el._hideTimer = setTimeout(() => { el.style.opacity = '.25'; }, 3000);
+    el._hideTimer = setTimeout(() => { el.style.opacity = '.18'; }, 4000);
   }
 
   function showProductionNotice(text, warn) {
     updateNetworkBadge(text, warn);
   }
 
+  // ── Phase 3+4: Premium design system injection ────────────────────────────────
+  function injectPremiumStyles() {
+    if (document.getElementById('ariaPremiumStyles')) return;
+    const s = document.createElement('style');
+    s.id = 'ariaPremiumStyles';
+    s.textContent = `
+      :focus-visible{outline:2px solid var(--orange);outline-offset:2px;border-radius:4px}
+      .btn-sm,.q-opt,button.start-debate-btn{transition:all .15s cubic-bezier(.4,0,.2,1) !important}
+      .btn-sm:active:not(:disabled),.q-opt:active:not(:disabled){transform:scale(.97) !important}
+      .room-code-display{font-variant-numeric:tabular-nums;letter-spacing:.12em !important;user-select:all;cursor:copy}
+      .compete-chat,.cc-msg,.debate-chat{scroll-behavior:smooth}
+      .cc-msg.me{background:var(--orange-pale) !important}
+      .cc-msg.them{background:var(--cream2) !important}
+      #ariaToastContainer{pointer-events:none}
+      #ariaProdNetBadge{font-weight:500 !important}
+      * {scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
+      ::-webkit-scrollbar{width:4px;height:4px}
+      ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
+      ::-webkit-scrollbar-track{background:transparent}
+      @supports(height:100dvh){.al-right,.al-left,.aria-login{min-height:100dvh !important}}
+      @media(prefers-reduced-motion:no-preference){
+        .screen.active{animation:ariaScreenIn .18s ease both}
+        @keyframes ariaScreenIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+      }
+      @media(max-width:600px){
+        #ariaToastContainer{right:10px !important;left:10px !important;max-width:none !important}
+        #ariaProdNetBadge{bottom:calc(70px + env(safe-area-inset-bottom,0px)) !important}
+      }
+      #debateTopicInput:focus{border-color:var(--orange) !important;box-shadow:0 0 0 3px rgba(232,98,26,.1)}
+      #verdictBtn:active{transform:scale(.97) !important}
+      .q-opt.correct{background:var(--green-pale) !important;color:var(--green) !important;border-color:rgba(45,125,79,.3) !important}
+      .q-opt.wrong{background:var(--red-pale) !important;color:var(--red) !important;border-color:rgba(192,57,43,.3) !important}
+      .player-chip{transition:all .2s}
+      .pc-dot{transition:opacity .3s}
+    `;
+    document.head.appendChild(s);
+  }
+
+  // ── Phase 5: Adaptive intelligence — track correction patterns ────────────────
+  function trackWeakAreas() {
+    try {
+      if (typeof SESSION === 'undefined' || !SESSION.corrections?.length) return;
+      const stored = JSON.parse(localStorage.getItem('aria_weak_areas') || '{}');
+      SESSION.corrections.forEach(c => {
+        const key = (c.type || c.rule || 'grammar').toLowerCase().trim().slice(0, 40);
+        if (key) stored[key] = (stored[key] || 0) + 1;
+      });
+      localStorage.setItem('aria_weak_areas', JSON.stringify(stored));
+    } catch (_) {}
+  }
+
+  function getTopWeakAreas(n) {
+    try {
+      return Object.entries(JSON.parse(localStorage.getItem('aria_weak_areas') || '{}'))
+        .sort((a, b) => b[1] - a[1]).slice(0, n || 3).map(e => e[0]);
+    } catch (_) { return []; }
+  }
+
+  // ── Phase 6+7: Invisible intelligence — dashboard context panel ───────────────
+  function injectDashboardIntelligence() {
+    try {
+      const weakAreas = getTopWeakAreas(3);
+      if (!weakAreas.length) return;
+      if (document.getElementById('ariaWeakAreasBadge')) return;
+      const target = document.querySelector('#screenDash .dash-hero, #screenDash .dc-grid');
+      if (!target) return;
+      const banner = document.createElement('div');
+      banner.id = 'ariaWeakAreasBadge';
+      banner.style.cssText = 'max-width:700px;margin:0 auto 14px;padding:0 20px';
+      banner.innerHTML = '<div style="background:var(--cream2);border:1px solid var(--border);border-radius:11px;padding:10px 14px;font-size:12.5px;color:var(--text2);display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span style="font-weight:600;color:var(--text);flex-shrink:0">Practice focus:</span>'
+        + weakAreas.map(a => '<span style="background:var(--orange-pale);color:var(--orange);padding:2px 9px;border-radius:99px;font-weight:600;font-size:11.5px;white-space:nowrap">' + escapeHTML(String(a)) + '</span>').join('')
+        + '</div>';
+      target.parentNode.insertBefore(banner, target);
+    } catch (_) {}
+  }
+
+  // ── Phase 7: Emotional continuity — returning-user awareness ─────────────────
+  function injectContextualGreeting() {
+    try {
+      if (document.getElementById('ariaReturnMsg')) return;
+      const sessions = JSON.parse(localStorage.getItem('aria_sessions') || '[]');
+      if (sessions.length < 2) return;
+      const last = sessions[sessions.length - 1];
+      if (!last?.timestamp) return;
+      const days = Math.floor((Date.now() - last.timestamp) / 86400000);
+      let msg = null;
+      if (days === 0) msg = 'You already had a session today — great consistency.';
+      else if (days === 1) msg = "Yesterday's session laid good groundwork. Let's keep building.";
+      else if (days >= 7) msg = "It's been a while — no pressure, just get back into the rhythm.";
+      if (!msg) return;
+      const anchor = document.querySelector('#screenDash h2, #screenDash .screen-title, #screenDash .dash-hero');
+      if (!anchor) return;
+      const el = document.createElement('p');
+      el.id = 'ariaReturnMsg';
+      el.style.cssText = 'font-size:13px;color:var(--text3);margin:2px 0 12px;font-style:italic;padding:0 20px;max-width:700px;margin-left:auto;margin-right:auto';
+      el.textContent = msg;
+      anchor.parentNode.insertBefore(el, anchor.nextSibling);
+    } catch (_) {}
+  }
+
   // Wire up production functions the instant this script executes — before any user
   // interaction, before DOMContentLoaded, before any API call completes.
-  // This is why the "Realtime calling is still loading" alert was appearing: the
-  // overrides were gated behind two awaited API calls, so clicking early showed the stub.
   installGlobalOverrides();
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
