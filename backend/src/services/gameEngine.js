@@ -1,31 +1,17 @@
+import { randomInt } from 'node:crypto';
 import { COMPETE_QUESTIONS } from '../data/competeQuestions.js';
 
-function seededRandom(seed) {
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < seed.length; i += 1) {
-    h ^= seed.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return () => {
-    h += h << 13; h ^= h >>> 7;
-    h += h << 3; h ^= h >>> 17;
-    h += h << 5;
-    return (h >>> 0) / 4294967296;
-  };
-}
-
-export function deterministicQuestions(roomCode, count = 8) {
-  const rng = seededRandom(String(roomCode));
-  const copy = COMPETE_QUESTIONS.map((q, idx) => ({ ...q, id: `q_${idx}` }));
+export function randomQuestions(count = 8) {
+  const copy = COMPETE_QUESTIONS.map((q, idx) => ({ ...q, id: `q_${idx}`, opts: [...q.opts] }));
   for (let i = copy.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(rng() * (i + 1));
+    const j = randomInt(i + 1);
     [copy[i], copy[j]] = [copy[j], copy[i]];
   }
-  return copy.slice(0, count).map(q => ({ ...q, opts: [...q.opts] }));
+  return copy.slice(0, count);
 }
 
-export function createGameState(roomCode, playerIds, mode = 'quiz') {
-  const questions = deterministicQuestions(roomCode, mode === 'vocab' ? 8 : 8);
+export function createGameState(playerIds, mode = 'quiz') {
+  const questions = randomQuestions(8);
   return {
     mode,
     status: 'active',
