@@ -11,9 +11,9 @@ export function randomQuestions(count = 8) {
   return copy.slice(0, count);
 }
 
-export function createGameState(playerIds, mode = 'quiz') {
+export function createGameState(playerIds, mode = 'quiz', customTopic = '') {
   if (mode === 'debate') {
-    const topic = DEBATE_TOPICS[randomInt(DEBATE_TOPICS.length)];
+    const topic = customTopic || DEBATE_TOPICS[randomInt(DEBATE_TOPICS.length)];
     const shuffled = [...playerIds].sort(() => (randomInt(2) ? 1 : -1));
     return {
       mode,

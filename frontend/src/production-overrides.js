@@ -200,6 +200,7 @@
       startCompeteGame: productionStartCompeteGame,
       answerCompeteQ: productionAnswerCompeteQ,
       closeCompeteRoom: productionCloseCompeteRoom,
+      debateVerdict: productionDebateVerdict,
       startPeerCall: productionStartPeerCall,
       acceptOffer: productionJoinPeerCall,
       endPeerCall: productionEndPeerCall,
@@ -331,13 +332,83 @@
 
   async function productionStartCompeteGame() {
     if (!PROD.room?.code) return;
+    const body = { playerId: PROD.playerId };
+    if (currentCompeteMode === 'debate' || PROD.room.mode === 'debate') {
+      const topicEl = document.getElementById('debateTopicInput');
+      const topic = (topicEl?.value || '').trim();
+      if (!topic) { alert('Please enter a debate topic before starting.'); return; }
+      body.topic = topic;
+    }
     try {
       await api('/api/rooms/' + PROD.room.code + '/start', {
         method: 'POST',
-        body: JSON.stringify({ playerId: PROD.playerId })
+        body: JSON.stringify(body)
       });
     } catch (error) {
       alert('Could not start game: ' + error.message);
+    }
+  }
+
+  async function productionDebateVerdict() {
+    const gs = PROD.room?.gameState;
+    if (!gs || gs.mode !== 'debate') return;
+    const btn = document.getElementById('verdictBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ AI Judge is deliberating…'; }
+    const players = PROD.players;
+    const forPlayer = players.find(p => p.playerId === gs.stanceFor);
+    const againstPlayer = players.find(p => p.playerId === gs.stanceAgainst);
+    const chatMessages = PROD.events
+      .filter(e => e.type === 'chat' && e.payload?.text)
+      .map(e => {
+        const p = players.find(pl => pl.playerId === e.playerId);
+        return (p?.displayName || 'Player') + ': ' + e.payload.text;
+      }).join('\n');
+    if (!chatMessages) {
+      alert('No debate messages yet — have both players make arguments in the chat first.');
+      if (btn) { btn.disabled = false; btn.textContent = '⚖️ End Debate & Get AI Verdict'; }
+      return;
+    }
+    const prompt = `You are an impartial English debate judge. Evaluate the following debate.
+
+Topic: "${gs.topic}"
+${forPlayer?.displayName || 'Player 1'} is arguing FOR.
+${againstPlayer?.displayName || 'Player 2'} is arguing AGAINST.
+
+Transcript:
+${chatMessages}
+
+Please provide:
+1. ${forPlayer?.displayName || 'Player 1'}'s best arguments (2-3 sentences)
+2. ${againstPlayer?.displayName || 'Player 2'}'s best arguments (2-3 sentences)
+3. Winner and reason (2-3 sentences)
+4. Score out of 10 for each player
+
+Be concise, fair, and encouraging. Focus on argument quality and English expression.`;
+    try {
+      const res = await originalFetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 500,
+          temperature: 0.7
+        })
+      });
+      const data = await res.json();
+      const verdict = data.choices?.[0]?.message?.content || 'Could not get verdict.';
+      await api('/api/rooms/' + PROD.room.code + '/events', {
+        method: 'POST',
+        body: JSON.stringify({ playerId: PROD.playerId, type: 'system', payload: { text: '⚖️ AI JUDGE VERDICT:\n' + verdict } })
+      });
+      const area = document.getElementById('liveQuestionArea'); if (area) area.style.display = 'none';
+      const result = document.getElementById('liveGameResult'); if (result) result.style.display = 'block';
+      setTextSafe('liveResultEmoji', '⚖️');
+      setTextSafe('liveResultText', 'Debate Complete!');
+      setTextSafe('liveResultSub', 'AI judge\'s verdict has been posted in the chat above.');
+    } catch (error) {
+      alert('Could not get verdict: ' + error.message);
+      if (btn) { btn.disabled = false; btn.textContent = '⚖️ End Debate & Get AI Verdict'; }
     }
   }
 
@@ -394,6 +465,17 @@
     if (btn) { btn.disabled = true; btn.textContent = '▶ Start Game (need 2 players)'; }
     const chat = document.getElementById('competeChat');
     if (chat) chat.innerHTML = '<div class="cc-msg system">Room created! Share code ' + escapeHTML(room.code) + ' with a friend.</div>';
+    // Inject debate topic input for host
+    const existing = document.getElementById('debateTopicSection');
+    if (existing) existing.remove();
+    if (mode === 'debate') {
+      const section = document.createElement('div');
+      section.id = 'debateTopicSection';
+      section.style.cssText = 'margin:14px 0 4px;';
+      section.innerHTML = '<div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">📝 Debate Topic (host sets this)</div><textarea id="debateTopicInput" rows="2" placeholder="Enter the topic to debate — e.g. \'AI will replace most creative jobs within 10 years\'" style="width:100%;background:var(--cream);border:1.5px solid var(--border2);border-radius:10px;padding:10px 12px;font-size:13px;font-family:Plus Jakarta Sans,sans-serif;color:var(--text);resize:none;outline:none;box-sizing:border-box;transition:border-color .2s" onfocus="this.style.borderColor=\'var(--orange)\'" onblur="this.style.borderColor=\'var(--border2)\'"></textarea><div style="font-size:11px;color:var(--text3);margin-top:4px">Sides (FOR / AGAINST) will be randomly assigned when you start.</div>';
+      const statusEl = document.getElementById('roomStatus');
+      if (statusEl?.parentNode) statusEl.parentNode.insertBefore(section, statusEl.nextSibling);
+    }
   }
 
   function applyCompeteSnapshot(data) {
@@ -465,11 +547,17 @@
     const area = document.getElementById('liveQuestionArea'); if (area) area.style.display = 'block';
 
     if (room.mode === 'debate') {
-      const myStance = gs.stanceFor === PROD.playerId ? '✅ FOR (argue in favour)' : '❌ AGAINST (argue against)';
+      const myStance = gs.stanceFor === PROD.playerId ? '✅ FOR — argue in favour' : '❌ AGAINST — argue against';
       setTextSafe('liveQLabel', 'Your stance: ' + myStance);
       setTextSafe('liveQuestion', gs.topic || 'Debate topic loading…');
       const opts = document.getElementById('liveOptions');
-      if (opts) opts.innerHTML = '<div style="color:var(--text2);font-size:13px;margin-top:4px">💬 Use the chat below to make your arguments. Debate ends when the host closes the room.</div>';
+      if (opts) {
+        const isHost = room.hostPlayerId === PROD.playerId;
+        opts.innerHTML = '<div style="color:var(--text2);font-size:13px;margin-bottom:12px">💬 Use the chat below to argue your position. Make strong points!</div>' +
+          (isHost
+            ? '<button id="verdictBtn" onclick="window.ARIA_PRODUCTION.fn.debateVerdict()" style="background:linear-gradient(135deg,var(--orange),var(--amber));border:none;border-radius:10px;padding:10px 18px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif">⚖️ End Debate &amp; Get AI Verdict</button>'
+            : '<div style="color:var(--text3);font-size:12px;font-style:italic">⏳ Host will call the AI judge when the debate is done…</div>');
+      }
       return;
     }
 

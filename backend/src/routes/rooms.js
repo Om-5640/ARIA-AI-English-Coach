@@ -161,7 +161,8 @@ export function roomsRouter({ store, hub, config }) {
       assertOrThrow(playerId === room.hostPlayerId, 403, 'Only the host can start this room.', 'host_required');
       const players = (await store.listPlayers(code)).filter(p => p.connected);
       assertOrThrow(players.length >= 2, 409, 'At least two connected players are required.', 'need_two_players');
-      const gameState = createGameState(players.map(p => p.playerId), room.mode);
+      const topic = String(req.body?.topic || '').trim().slice(0, 300);
+      const gameState = createGameState(players.map(p => p.playerId), room.mode, topic);
       await store.updateRoom(code, { status: 'active', gameState });
       const event = await store.addEvent(code, { type: 'system', playerId, payload: { text: 'Game started.' } });
       await hub.publishRoomEvent(code, event);
