@@ -1,0 +1,10 @@
+backend/node_modules
+backend/.env
+backend/.env.*
+backend/*.log
+backend/logs
+.git
+.gitignore
+*.md
+tmp/
+temp/

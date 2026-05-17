@@ -1,0 +1,16 @@
+import { customAlphabet } from 'nanoid';
+
+const digits = customAlphabet('0123456789', 6);
+const playerAlphabet = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ', 24);
+
+export function newRoomCode() {
+  return digits();
+}
+
+export function newPlayerId() {
+  return `p_${playerAlphabet()}`;
+}
+
+export function cleanRoomCode(code) {
+  return String(code || '').replace(/\D/g, '').slice(0, 6);
+}
