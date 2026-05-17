@@ -5387,8 +5387,8 @@ function suggestDebateTopicByInterests(){
     <div class="room-panel" id="joinRoomPanel">
       <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:14px">🔗 Join a Friend's Room</div>
       <div class="field">
-        <div class="field-label">Room Code (6 digits)</div>
-        <input type="text" id="joinCodeInput" placeholder="e.g. 482917" maxlength="6" style="font-size:22px;letter-spacing:8px;text-align:center;font-weight:700">
+        <div class="field-label">Room Code (8 digits)</div>
+        <input type="text" id="joinCodeInput" placeholder="e.g. 48291734" maxlength="8" style="font-size:22px;letter-spacing:8px;text-align:center;font-weight:700">
       </div>
       <div style="display:flex;gap:10px;margin-top:14px">
         <button class="btn-sm primary" onclick="joinRoom()">🔗 Join Room</button>
@@ -5450,7 +5450,7 @@ function suggestDebateTopicByInterests(){
             </div>
             <div class="field-label" style="margin-bottom:6px">Join a friend call</div>
             <div style="display:flex;gap:8px">
-              <textarea id="peerAnswerInput" rows="3" placeholder="Enter 6-digit call code" style="flex:1;font-size:11px;font-family:monospace;resize:none"></textarea>
+              <textarea id="peerAnswerInput" rows="3" placeholder="Enter 8-digit call code" style="flex:1;font-size:11px;font-family:monospace;resize:none"></textarea>
               <button class="btn-sm primary" onclick="acceptOffer()">🔗 Join Call</button>
             </div>
           </div>
