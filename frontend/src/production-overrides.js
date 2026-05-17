@@ -38,6 +38,21 @@
       const nextInit = { ...(init || {}), headers: cleanHeaders((init && init.headers) || {}) };
       delete nextInit.headers.Authorization;
       delete nextInit.headers.authorization;
+      // Phase 6: inject tracked weak areas into coaching system prompt
+      if (!isTranscribe && nextInit.body) {
+        try {
+          const body = JSON.parse(nextInit.body);
+          const weak = getTopWeakAreas(3);
+          if (weak.length && Array.isArray(body.messages)) {
+            const si = body.messages.findIndex(m => m.role === 'system');
+            if (si !== -1) {
+              const msgs = body.messages.slice();
+              msgs[si] = { ...msgs[si], content: msgs[si].content + '\n\nUser recurring weak areas — pay extra attention to these in corrections: ' + weak.join(', ') + '.' };
+              nextInit.body = JSON.stringify({ ...body, messages: msgs });
+            }
+          }
+        } catch (_) {}
+      }
       return originalFetch(target, nextInit);
     }
     return originalFetch(input, init);
@@ -137,7 +152,6 @@
     setTimeout(() => { try { injectDashboardIntelligence(); injectContextualGreeting(); } catch (_) {} }, 800);
     try {
       PROD.config = await api('/api/config');
-      await api('/api/health');
       connectRealtime();
       showProductionNotice('Connected');
     } catch (error) {
@@ -229,6 +243,15 @@
     try { acceptOffer = productionJoinPeerCall; window.acceptOffer = productionJoinPeerCall; } catch (_) {}
     try { endPeerCall = productionEndPeerCall; window.endPeerCall = productionEndPeerCall; } catch (_) {}
     try { copyPeerOffer = copyPeerRoomCode; window.copyPeerOffer = copyPeerRoomCode; } catch (_) {}
+
+    // Phase 10: hook trackWeakAreas into goHome so corrections are persisted on navigation
+    try {
+      const _origGoHome = window.goHome;
+      window.goHome = function () {
+        try { trackWeakAreas(); } catch (_) {}
+        if (typeof _origGoHome === 'function') return _origGoHome.apply(this, arguments);
+      };
+    } catch (_) {}
 
     // Primary dispatch namespace — HTML stubs call through here.
     PROD.fn = {
@@ -348,7 +371,7 @@
       document.getElementById('joinRoomPanel')?.classList.remove('active');
       document.getElementById('createRoomPanel')?.classList.add('active');
       setTextSafe('roomCodeDisplay', code);
-      setTextSafe('roomStatus', '✅ Joined! Waiting for host to start the game…');
+      setTextSafe('roomStatus', 'Joined — waiting for the host to start.');
       setTextSafe('playerSelfName', currentDisplayName());
       renderChatEvents(data.events || []);
       subscribeRoom(code);
@@ -396,7 +419,7 @@
     const gs = PROD.room?.gameState;
     if (!gs || gs.mode !== 'debate') return;
     const btn = document.getElementById('verdictBtn');
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ AI Judge is deliberating…'; }
+    if (btn) { btn.disabled = true; btn.textContent = 'AI judge is deliberating…'; }
     const players = PROD.players;
     const forPlayer = players.find(p => p.playerId === gs.stanceFor);
     const againstPlayer = players.find(p => p.playerId === gs.stanceAgainst);
@@ -408,7 +431,7 @@
       }).join('\n');
     if (!chatMessages) {
       showToast('No debate messages yet — have both players argue in chat first.', 'warn');
-      if (btn) { btn.disabled = false; btn.textContent = '⚖️ End Debate & Get AI Verdict'; }
+      if (btn) { btn.disabled = false; btn.textContent = 'End Debate & Get AI Verdict'; }
       return;
     }
     const prompt = `You are an impartial English debate judge. Evaluate the following debate.
@@ -451,7 +474,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
       setTextSafe('liveResultSub', 'AI judge\'s verdict has been posted in the chat above.');
     } catch (error) {
       showToast('Could not get verdict: ' + error.message, 'error');
-      if (btn) { btn.disabled = false; btn.textContent = '⚖️ End Debate & Get AI Verdict'; }
+      if (btn) { btn.disabled = false; btn.textContent = 'End Debate & Get AI Verdict'; }
     }
   }
 
@@ -505,7 +528,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     const labels = { debate: '⚖️ DEBATE BATTLE', quiz: '⚡ QUIZ RACE', vocab: '📚 VOCAB SHOWDOWN' };
     setTextSafe('roomModeLabel', labels[mode] || String(mode).toUpperCase());
     setTextSafe('playerSelfName', currentDisplayName());
-    setTextSafe('roomStatus', '⏳ Waiting for your friend to join… Share this code.');
+    setTextSafe('roomStatus', 'Waiting for your friend — share the code above.');
     const btn = document.getElementById('startGameBtn');
     if (btn) { btn.disabled = true; btn.textContent = '▶ Start Game (need 2 players)'; }
     const chat = document.getElementById('competeChat');
@@ -542,7 +565,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
       btn.textContent = isHost ? (connected.length >= 2 ? '▶ Start Game!' : '▶ Start Game (need 2 players)') : 'Waiting for host…';
     }
     if (data.room.status === 'waiting') {
-      setTextSafe('roomStatus', connected.length >= 2 ? '✅ ' + connected.map(p => p.displayName).join(' & ') + ' are in the room!' : '⏳ Waiting for your friend to join… Share this code.');
+      setTextSafe('roomStatus', connected.length >= 2 ? connected.map(p => p.displayName).join(' & ') + ' are ready.' : 'Waiting for your friend — share the code above.');
     }
     if (data.room.gameState?.status === 'active') renderAuthoritativeGame(data.room, connected);
     if (data.room.gameState?.status === 'finished' || data.room.status === 'ended') renderAuthoritativeResult(data.room, connected);
@@ -592,16 +615,16 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     const area = document.getElementById('liveQuestionArea'); if (area) area.style.display = 'block';
 
     if (room.mode === 'debate') {
-      const myStance = gs.stanceFor === PROD.playerId ? '✅ FOR — argue in favour' : '❌ AGAINST — argue against';
+      const myStance = gs.stanceFor === PROD.playerId ? 'FOR — argue in favour' : 'AGAINST — argue against';
       setTextSafe('liveQLabel', 'Your stance: ' + myStance);
       setTextSafe('liveQuestion', gs.topic || 'Debate topic loading…');
       const opts = document.getElementById('liveOptions');
       if (opts) {
         const isHost = room.hostPlayerId === PROD.playerId;
-        opts.innerHTML = '<div style="color:var(--text2);font-size:13px;margin-bottom:12px">💬 Use the chat below to argue your position. Make strong points!</div>' +
+        opts.innerHTML = '<div style="color:var(--text2);font-size:13px;margin-bottom:12px">Use the chat below to argue your position. Make strong points.</div>' +
           (isHost
-            ? '<button id="verdictBtn" onclick="window.ARIA_PRODUCTION.fn.debateVerdict()" style="background:linear-gradient(135deg,var(--orange),var(--amber));border:none;border-radius:10px;padding:10px 18px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif">⚖️ End Debate &amp; Get AI Verdict</button>'
-            : '<div style="color:var(--text3);font-size:12px;font-style:italic">⏳ Host will call the AI judge when the debate is done…</div>');
+            ? '<button id="verdictBtn" onclick="window.ARIA_PRODUCTION.fn.debateVerdict()" style="background:linear-gradient(135deg,var(--orange),var(--amber));border:none;border-radius:10px;padding:10px 18px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif">End Debate &amp; Get AI Verdict</button>'
+            : '<div style="color:var(--text3);font-size:12px;font-style:italic">Waiting for host to call the AI judge…</div>');
       }
       return;
     }
@@ -679,7 +702,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
       PROD.call.polite = false;
       // Get media before subscribing — ensures we're ready before the hub can trigger peer connection
       await prepareLocalMedia(mode);
-      showPeerArea(data.room.code, '⏳ Share this call code with your friend…');
+      showPeerArea(data.room.code, 'Share this call code with your friend.');
       subscribeRoom(data.room.code);
       applyCallSnapshot(data);
     } catch (error) {
@@ -698,7 +721,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
       // Show UI before any async work so status messages are always visible to the user
       var pv = document.getElementById('peerVideoArea');
       if (pv) pv.style.display = 'block';
-      setPeerStatus('🔗 Joining call…');
+      setPeerStatus('Joining call…');
 
       const data = await api('/api/rooms/' + code + '/join', {
         method: 'POST',
@@ -709,7 +732,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
       PROD.call.mode = data.room.mode === 'call-voice' ? 'voice' : 'video';
       PROD.call.polite = true;
       await prepareLocalMedia(PROD.call.mode);
-      showPeerArea(code, '🟡 Joined! Connecting to your friend…');
+      showPeerArea(code, 'Joined — connecting to your friend…');
       applyCallSnapshot(data);
       subscribeRoom(code);
     } catch (error) {
@@ -733,7 +756,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
         }
         // Camera in use by another app or browser — fall back to voice-only rather than failing the call
         console.warn('[ARIA] Camera unavailable (' + videoErr.name + '), falling back to voice-only:', videoErr.message);
-        setPeerStatus('⚠️ Camera in use by another app — switching to voice-only.', true);
+        setPeerStatus('Camera unavailable — switching to voice only.', true);
         PROD.call.mode = 'voice';
         try {
           PROD.call.localStream = await navigator.mediaDevices.getUserMedia({ audio, video: false });
@@ -773,13 +796,13 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     PROD.call.room = data.room;
     const players = (data.players || []).filter(p => p.connected !== false);
     if (players.length < 2) {
-      setPeerStatus('⏳ Waiting for your friend to join — code: ' + data.room.code);
+      setPeerStatus('Waiting for your friend — code: ' + data.room.code);
       return;
     }
     if (!PROD.call.localStream) return;
     const remote = players.find(p => p.playerId !== PROD.playerId);
     if (!remote) return;
-    setPeerStatus('🟡 Connecting to ' + (remote.displayName || 'your friend') + '…');
+    setPeerStatus('Connecting to ' + (remote.displayName || 'your friend') + '…');
 
     if (PROD.call.pc) {
       // PC already exists. If we are the host (impolite) and the connection is not yet
@@ -838,7 +861,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
           PROD.call.remoteStream = streams[0];
           rv.play().catch(() => {});
         }
-        setPeerStatus('🟢 Connected!');
+        setPeerStatus('Connected');
         const offerSec = document.getElementById('peerOfferSection');
         if (offerSec) offerSec.style.display = 'none';
         try { updateActiveCall({ status: 'connected', connectedAt: Date.now() }); } catch (_) {}
@@ -852,16 +875,16 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
 
     pc.onconnectionstatechange = () => {
       const s = pc.connectionState;
-      if (s === 'connecting') setPeerStatus('🟡 Exchanging connection info…');
+      if (s === 'connecting') setPeerStatus('Establishing connection…');
       if (s === 'connected') {
-        setPeerStatus('🟢 Connected!');
+        setPeerStatus('Connected');
         const offerSec = document.getElementById('peerOfferSection');
         if (offerSec) offerSec.style.display = 'none';
         try { updateActiveCall({ status: 'connected', connectedAt: Date.now() }); } catch (_) {}
         try { window.renderCallState(); } catch (_) {}
       }
-      if (s === 'disconnected') setPeerStatus('⚠️ Connection interrupted — trying to recover…', true);
-      if (s === 'failed') { setPeerStatus('⚠️ Restarting ICE…', true); pc.restartIce(); }
+      if (s === 'disconnected') setPeerStatus('Connection interrupted — recovering…', true);
+      if (s === 'failed') { setPeerStatus('Reconnecting peer…', true); pc.restartIce(); }
       if (s === 'closed') setPeerStatus('Call ended.');
     };
 
@@ -933,7 +956,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
   function copyPeerRoomCode() {
     const code = document.getElementById('peerOfferBox')?.value || PROD.call.room?.code || '';
     if (!code) return;
-    navigator.clipboard?.writeText(code).then(() => setPeerStatus('✅ Call code copied.')).catch(() => showToast('Call code: ' + code, 'info', 8000));
+    navigator.clipboard?.writeText(code).then(() => setPeerStatus('Call code copied.')).catch(() => showToast('Call code: ' + code, 'info', 8000));
   }
 
   async function productionEndPeerCall(reason, silent) {
@@ -979,6 +1002,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
 
   function installLifecycleGuards() {
     window.addEventListener('pagehide', () => {
+      try { trackWeakAreas(); } catch (_) {}
       productionEndPeerCall('Page closed', true);
       if (PROD.room?.code) api('/api/rooms/' + PROD.room.code + '/leave', { method: 'POST', body: JSON.stringify({ playerId: PROD.playerId }) }).catch(() => {});
     });
@@ -1020,40 +1044,84 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     updateNetworkBadge(text, warn);
   }
 
-  // ── Phase 3+4: Premium design system injection ────────────────────────────────
+  // ── Phases 3+4+8+9: Premium design system, mobile, and polish injection ─────────
   function injectPremiumStyles() {
     if (document.getElementById('ariaPremiumStyles')) return;
     const s = document.createElement('style');
     s.id = 'ariaPremiumStyles';
     s.textContent = `
+      /* Focus */
       :focus-visible{outline:2px solid var(--orange);outline-offset:2px;border-radius:4px}
+
+      /* Unified button feedback */
       .btn-sm,.q-opt,button.start-debate-btn{transition:all .15s cubic-bezier(.4,0,.2,1) !important}
-      .btn-sm:active:not(:disabled),.q-opt:active:not(:disabled){transform:scale(.97) !important}
+      .btn-sm:active:not(:disabled),.q-opt:active:not(:disabled){transform:scale(.97) !important;filter:brightness(.97)}
+      button:disabled{cursor:not-allowed;opacity:.55}
+
+      /* Phase 8: Mobile — remove tap highlight, enable momentum scrolling */
+      button,.btn-sm,input,select,textarea,a{-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+      .compete-chat,.debate-chat,.cc-chat{-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+
+      /* Phase 8: Minimum touch target */
+      .btn-sm{min-height:40px}
+
+      /* Phase 8: Prevent iOS input zoom (requires font-size >= 16px on inputs) */
+      input[type="text"],input[type="email"],input[type="search"],textarea{font-size:max(16px,1em)}
+
+      /* Phase 8: Safe area for room panels */
+      .room-panel{padding-bottom:max(12px, env(safe-area-inset-bottom,0px))}
+
+      /* Phase 8: 100dvh mobile viewport */
+      @supports(height:100dvh){.al-right,.al-left,.aria-login{min-height:100dvh !important}}
+
+      /* Room code readability */
       .room-code-display{font-variant-numeric:tabular-nums;letter-spacing:.12em !important;user-select:all;cursor:copy}
+
+      /* Chat */
       .compete-chat,.cc-msg,.debate-chat{scroll-behavior:smooth}
       .cc-msg.me{background:var(--orange-pale) !important}
       .cc-msg.them{background:var(--cream2) !important}
-      #ariaToastContainer{pointer-events:none}
-      #ariaProdNetBadge{font-weight:500 !important}
-      * {scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
+
+      /* Scrollbars */
+      *{scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
       ::-webkit-scrollbar{width:4px;height:4px}
       ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
       ::-webkit-scrollbar-track{background:transparent}
-      @supports(height:100dvh){.al-right,.al-left,.aria-login{min-height:100dvh !important}}
+
+      /* Phase 9: Screen entry animation */
       @media(prefers-reduced-motion:no-preference){
-        .screen.active{animation:ariaScreenIn .18s ease both}
-        @keyframes ariaScreenIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+        .screen.active{animation:ariaScreenIn .18s cubic-bezier(.4,0,.2,1) both}
+        @keyframes ariaScreenIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
       }
+
+      /* Phase 9: Player presence pulse */
+      @media(prefers-reduced-motion:no-preference){
+        .pc-dot{animation:ariaDotPulse 2.4s ease-in-out infinite}
+        @keyframes ariaDotPulse{0%,100%{opacity:1}50%{opacity:.35}}
+      }
+
+      /* Phase 9: Smooth score counter */
+      #liveYouScore,#liveFriendScore{display:inline-block;transition:transform .3s cubic-bezier(.34,1.56,.64,1)}
+
+      /* Phase 9: Quiz answer states */
+      .q-opt{transition:all .15s cubic-bezier(.4,0,.2,1) !important}
+      .q-opt.correct{background:var(--green-pale) !important;color:var(--green) !important;border-color:rgba(45,125,79,.3) !important}
+      .q-opt.wrong{background:var(--red-pale) !important;color:var(--red) !important;border-color:rgba(192,57,43,.3) !important}
+
+      /* Phase 9: Debate topic input */
+      #debateTopicInput:focus{border-color:var(--orange) !important;box-shadow:0 0 0 3px rgba(232,98,26,.08)}
+      #verdictBtn{transition:all .15s cubic-bezier(.4,0,.2,1)}
+      #verdictBtn:active{transform:scale(.97) !important}
+
+      /* Phase 9: Player chip transition */
+      .player-chip{transition:opacity .25s,transform .2s}
+      .pc-dot{transition:background-color .3s}
+
+      /* Toast + badge mobile safe area */
       @media(max-width:600px){
         #ariaToastContainer{right:10px !important;left:10px !important;max-width:none !important}
         #ariaProdNetBadge{bottom:calc(70px + env(safe-area-inset-bottom,0px)) !important}
       }
-      #debateTopicInput:focus{border-color:var(--orange) !important;box-shadow:0 0 0 3px rgba(232,98,26,.1)}
-      #verdictBtn:active{transform:scale(.97) !important}
-      .q-opt.correct{background:var(--green-pale) !important;color:var(--green) !important;border-color:rgba(45,125,79,.3) !important}
-      .q-opt.wrong{background:var(--red-pale) !important;color:var(--red) !important;border-color:rgba(192,57,43,.3) !important}
-      .player-chip{transition:all .2s}
-      .pc-dot{transition:opacity .3s}
     `;
     document.head.appendChild(s);
   }
