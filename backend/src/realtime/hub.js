@@ -155,9 +155,10 @@ export class RealtimeHub {
     );
     try {
       const players = await this.store.listPlayers(roomCode);
+      const graceThreshold = new Date(Date.now() - 15_000).toISOString();
       await Promise.all(
         players
-          .filter(p => p.connected && !activePids.has(p.playerId))
+          .filter(p => p.connected && !activePids.has(p.playerId) && (!p.lastSeenAt || p.lastSeenAt < graceThreshold))
           .map(p => this.store.updatePlayer(roomCode, p.playerId, { connected: false }).catch(() => {}))
       );
     } catch {}

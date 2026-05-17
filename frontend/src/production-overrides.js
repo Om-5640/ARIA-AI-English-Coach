@@ -52,10 +52,10 @@
 
   function getOrCreatePlayerId() {
     try {
-      const existing = localStorage.getItem('aria_player_id');
+      const existing = sessionStorage.getItem('aria_player_id');
       if (existing) return existing;
       const id = 'p_' + crypto.getRandomValues(new Uint32Array(4)).join('_');
-      localStorage.setItem('aria_player_id', id);
+      sessionStorage.setItem('aria_player_id', id);
       return id;
     } catch (_) {
       return 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2);
@@ -63,12 +63,12 @@
   }
 
   function getStoredSessionToken() {
-    try { return localStorage.getItem('aria_session_token') || ''; } catch (_) { return ''; }
+    try { return sessionStorage.getItem('aria_session_token') || ''; } catch (_) { return ''; }
   }
 
   function storeSessionToken(token) {
     PROD.sessionToken = token || '';
-    try { if (token) localStorage.setItem('aria_session_token', token); else localStorage.removeItem('aria_session_token'); } catch (_) {}
+    try { if (token) sessionStorage.setItem('aria_session_token', token); else sessionStorage.removeItem('aria_session_token'); } catch (_) {}
   }
 
   function api(path, options = {}) {
