@@ -35,7 +35,11 @@ export class RealtimeHub {
     ws.on('message', raw => {
       try {
         const message = JSON.parse(String(raw));
-        this.handleMessage(socketId, message);
+        this.handleMessage(socketId, message).catch(error => {
+          logger.warn('handleMessage error', { socketId, error: error.message });
+          const client = this.clients.get(socketId);
+          if (client) safeSend(client.ws, { type: 'error', error: 'Internal realtime error.' });
+        });
       } catch (error) {
         safeSend(ws, { type: 'error', error: 'Invalid realtime message.' });
       }
@@ -63,13 +67,28 @@ export class RealtimeHub {
   async handleMessage(socketId, message) {
     const client = this.clients.get(socketId);
     if (!client) return;
+
     if (message.type === 'room.subscribe') {
       const roomCode = String(message.roomCode || '').trim();
       const playerId = String(message.playerId || '').trim();
+      const sessionToken = String(message.sessionToken || '').trim();
+
       if (!/^\d{6}$/.test(roomCode) || !playerId) {
         safeSend(client.ws, { type: 'error', error: 'Invalid room subscription.' });
         return;
       }
+
+      if (!sessionToken) {
+        safeSend(client.ws, { type: 'error', error: 'Authentication required for room subscription.' });
+        return;
+      }
+
+      const player = await this.store.verifyPlayerToken(roomCode, playerId, sessionToken);
+      if (!player) {
+        safeSend(client.ws, { type: 'error', error: 'Unauthorized room subscription.' });
+        return;
+      }
+
       client.playerId = playerId;
       client.rooms.add(roomCode);
       if (!this.rooms.has(roomCode)) this.rooms.set(roomCode, new Set());

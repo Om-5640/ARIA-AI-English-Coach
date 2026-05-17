@@ -35,6 +35,12 @@ function toPlayer(row) {
   };
 }
 
+function safePlayer(player) {
+  if (!player) return null;
+  const { sessionToken: _token, ...safe } = player;
+  return safe;
+}
+
 export class MemoryStore {
   constructor() {
     this.rooms = new Map();
@@ -88,11 +94,13 @@ export class MemoryStore {
       role: player.role || 'guest',
       connected: player.connected ?? true,
       joinedAt: player.joinedAt || now,
-      lastSeenAt: now
+      lastSeenAt: now,
+      sessionToken: player.sessionToken || null
     };
     collection.set(next.playerId, next);
     this.players.set(code, collection);
-    return next;
+    const { sessionToken, ...publicFields } = next;
+    return { ...publicFields, sessionToken };
   }
 
   async updatePlayer(code, playerId, patch) {
@@ -100,11 +108,20 @@ export class MemoryStore {
     if (!collection?.has(playerId)) return null;
     const next = { ...collection.get(playerId), ...patch, lastSeenAt: new Date().toISOString() };
     collection.set(playerId, next);
-    return next;
+    return safePlayer(next);
   }
 
   async listPlayers(code) {
-    return [...(this.players.get(code)?.values() || [])].sort((a, b) => a.joinedAt.localeCompare(b.joinedAt));
+    return [...(this.players.get(code)?.values() || [])]
+      .sort((a, b) => a.joinedAt.localeCompare(b.joinedAt))
+      .map(safePlayer);
+  }
+
+  async verifyPlayerToken(roomCode, playerId, token) {
+    const collection = this.players.get(roomCode);
+    const player = collection?.get(playerId);
+    if (!player || !token || player.sessionToken !== token) return null;
+    return safePlayer(player);
   }
 
   async removePlayer(code, playerId) {
@@ -193,7 +210,7 @@ export class SupabaseStore {
   async addPlayer(code, player) {
     const room = await this.getRoom(code);
     if (!room) return null;
-    const { data, error } = await this.supabase.from('aria_room_players').upsert({
+    const row = {
       room_id: room.id,
       room_code: code,
       player_id: player.playerId,
@@ -201,9 +218,12 @@ export class SupabaseStore {
       role: player.role || 'guest',
       connected: player.connected ?? true,
       last_seen_at: new Date().toISOString()
-    }, { onConflict: 'room_id,player_id' }).select('*').single();
+    };
+    if (player.sessionToken) row.session_token = player.sessionToken;
+    const { data, error } = await this.supabase.from('aria_room_players').upsert(row, { onConflict: 'room_id,player_id' }).select('*').single();
     if (error) throw error;
-    return toPlayer(data);
+    const sessionToken = data.session_token || player.sessionToken || null;
+    return { ...toPlayer(data), sessionToken };
   }
 
   async updatePlayer(code, playerId, patch) {
@@ -224,6 +244,19 @@ export class SupabaseStore {
 
   async removePlayer(code, playerId) {
     return this.updatePlayer(code, playerId, { connected: false });
+  }
+
+  async verifyPlayerToken(roomCode, playerId, token) {
+    if (!token) return null;
+    const { data, error } = await this.supabase
+      .from('aria_room_players')
+      .select('*')
+      .eq('room_code', roomCode)
+      .eq('player_id', playerId)
+      .eq('session_token', token)
+      .maybeSingle();
+    if (error || !data) return null;
+    return toPlayer(data);
   }
 
   async addEvent(code, event) {
