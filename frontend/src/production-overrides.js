@@ -463,6 +463,16 @@
     setTextSafe('liveGameLabel', ({ quiz: '⚡ QUIZ RACE', debate: '⚖️ DEBATE BATTLE', vocab: '📚 VOCAB SHOWDOWN' }[room.mode] || 'LIVE GAME'));
     const result = document.getElementById('liveGameResult'); if (result) result.style.display = 'none';
     const area = document.getElementById('liveQuestionArea'); if (area) area.style.display = 'block';
+
+    if (room.mode === 'debate') {
+      const myStance = gs.stanceFor === PROD.playerId ? '✅ FOR (argue in favour)' : '❌ AGAINST (argue against)';
+      setTextSafe('liveQLabel', 'Your stance: ' + myStance);
+      setTextSafe('liveQuestion', gs.topic || 'Debate topic loading…');
+      const opts = document.getElementById('liveOptions');
+      if (opts) opts.innerHTML = '<div style="color:var(--text2);font-size:13px;margin-top:4px">💬 Use the chat below to make your arguments. Debate ends when the host closes the room.</div>';
+      return;
+    }
+
     const q = gs.questions?.[gs.currentQuestionIdx];
     if (!q) return;
     competeRoom.questionIdx = gs.currentQuestionIdx;
