@@ -219,15 +219,16 @@ let competeRoom = { code: '', players: [], gameActive: false, myScore: 0, friend
 let competeChannel = null;
 let roomPollTimer = null;
 function _aria(){return window.ARIA_PRODUCTION&&window.ARIA_PRODUCTION.fn;}
-function startCompeteRoom(mode){var f=_aria();if(f&&f.startCompeteRoom)return f.startCompeteRoom(mode);alert('Realtime backend is still loading. Try again in a moment.');}
+function _notReady(){showToast('Realtime backend is still loading — try again in a moment.','warn');}
+function startCompeteRoom(mode){var f=_aria();if(f&&f.startCompeteRoom)return f.startCompeteRoom(mode);_notReady();}
 function showJoinRoom(){document.getElementById('competeModeGrid').style.display='none';document.getElementById('createRoomPanel').classList.remove('active');document.getElementById('joinRoomPanel').classList.add('active');}
-function joinRoom(){var f=_aria();if(f&&f.joinRoom)return f.joinRoom();alert('Realtime backend is still loading. Try again in a moment.');}
+function joinRoom(){var f=_aria();if(f&&f.joinRoom)return f.joinRoom();_notReady();}
 function initRealtimeRoom(){/* production realtime is initialized by production-overrides.js */}
 function publishRoomUpdate(){/* disabled: room state is authoritative on the backend */}
 function startRoomPolling(){/* disabled: no polling architecture in production */}
 function sendCompeteMsg(){var f=_aria();if(f&&f.sendCompeteMsg)return f.sendCompeteMsg();}
 function addCompeteMsg(type,text){const chat=document.getElementById('competeChat');if(!chat)return;const div=document.createElement('div');div.className='cc-msg '+type;div.textContent=text;chat.appendChild(div);chat.scrollTop=chat.scrollHeight;}
-function copyRoomCode(){const code=document.getElementById('roomCodeDisplay').textContent;navigator.clipboard?.writeText(code).catch(()=>alert('Room code: '+code));}
+function copyRoomCode(){const code=document.getElementById('roomCodeDisplay').textContent;if(!code||code==='——')return;navigator.clipboard?.writeText(code).then(()=>showToast('Room code copied!','success',2500)).catch(()=>showToast('Room code: '+code,'info',8000));}
 function startCompeteGame(){var f=_aria();if(f&&f.startCompeteGame)return f.startCompeteGame();}
 function launchCompeteGame(){/* server snapshot renderer handles launch */}
 function renderCompeteQuestion(){/* server snapshot renderer handles questions */}
@@ -675,7 +676,7 @@ function generateCertificate(){
   if(levelIdx<0){
     const m=getCertificationMetrics();
     const r=CERT_REQUIREMENTS[0];
-    alert(`Certification is locked until ARIA has enough evidence.\n\nMinimum A1 requirements:\n${r.sessions} sessions, ${r.turns} turns, ${r.fluency}/10 fluency, ${r.vocab} saved words.\n\nCurrent: ${m.sessions} sessions, ${m.turns} turns, ${m.fluency.toFixed(1)}/10 fluency, ${m.vocab} words.`);
+    showToast(`Certification locked — need ${r.sessions} sessions, ${r.turns} turns, ${r.fluency}/10 fluency, ${r.vocab} saved words. Current: ${m.sessions}/${r.sessions} sessions.`, 'warn', 7000);
     return;
   }
   const CEFR = ['A1','A2','B1','B2','C1','C2'];
@@ -771,7 +772,7 @@ body{background:#fff;width:1122px;height:794px;display:flex;align-items:center;j
 // Legacy manual SDP exchange has been removed from the active runtime.
 // ══════════════════════════════════════════════
 let peerConn=null, localStream=null, peerMode='video';
-function startPeerCall(mode){var f=_aria();if(f&&f.startPeerCall)return f.startPeerCall(mode);alert('Realtime calling is still loading. Try again in a moment.');}
+function startPeerCall(mode){var f=_aria();if(f&&f.startPeerCall)return f.startPeerCall(mode);_notReady();}
 function getPeerMediaConstraints(mode){const audio={echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1};return mode==='video'?{audio,video:{width:{ideal:960,max:1280},height:{ideal:540,max:720},frameRate:{ideal:24,max:30},facingMode:'user'}}:{audio,video:false};}
 function acceptOffer(){var f=_aria();if(f&&f.acceptOffer)return f.acceptOffer();}
 function endPeerCall(reason){var f=_aria();if(f&&f.endPeerCall)return f.endPeerCall(reason);}

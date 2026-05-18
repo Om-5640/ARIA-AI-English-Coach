@@ -286,7 +286,7 @@ function useCustomDebateTopic(){
 }
 
 async function generateSteelmanStances(){
-  if(!GROQ_KEY){alert('Please enter your Groq API key first on the setup screen.');return}
+  if(!GROQ_KEY){showToast('AI not ready — please start the backend and reload.','warn');return}
   const section=document.getElementById('sideChooserSection');
   section.style.display='block';
   section.scrollIntoView({behavior:'smooth',block:'nearest'});
@@ -390,7 +390,7 @@ function toggleDebateVoice(){
 }
 
 async function startDebateVoice(){
-  if(!GROQ_KEY){alert('Groq API key needed');return}
+  if(!GROQ_KEY){showToast('AI not ready — please start the backend and reload.','warn');return}
   try{
     debateVoiceStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});
     debateVoiceChunks=[];
@@ -424,7 +424,7 @@ async function startDebateVoice(){
     document.getElementById('debateVoiceBtn').style.background='var(--orange-pale)';
     document.getElementById('debateVoiceBtn').style.borderColor='var(--orange)';
     document.getElementById('debateVoiceStatus').textContent='🔴 Recording — tap ⏹ to stop and transcribe';
-  }catch(e){alert('Mic access needed for voice mode');console.error(e);}
+  }catch(e){showToast('Microphone access is required for voice mode.','warn');console.error(e);}
 }
 
 function stopDebateVoice(){

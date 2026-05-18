@@ -22,7 +22,8 @@
       makingOffer: false,
       ignoreOffer: false,
       polite: true,
-      started: false
+      started: false,
+      _pendingCandidates: []
     },
     answeredQuestions: new Set(),
     lastSnapshotVersion: 0
@@ -805,11 +806,12 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     setPeerStatus('Connecting to ' + (remote.displayName || 'your friend') + '…');
 
     if (PROD.call.pc) {
-      // PC already exists. If we are the host (impolite) and the connection is not yet
-      // established, re-send the local offer so the joiner — who may have subscribed
-      // after the first offer was broadcast — can receive and answer it.
-      const state = PROD.call.pc.connectionState;
-      if (!PROD.call.polite && state === 'new' && !PROD.call.makingOffer) {
+      // PC already exists. If we are the host (impolite) and we have a local offer
+      // that the joiner may not have received yet (they subscribed after we sent it),
+      // re-send it now. Guard on signalingState — 'new' means no offer sent yet,
+      // 'have-local-offer' means offer sent but no answer received yet.
+      const ss = PROD.call.pc.signalingState;
+      if (!PROD.call.polite && (ss === 'have-local-offer' || ss === 'new') && !PROD.call.makingOffer) {
         reOffer(PROD.call.pc, remote.playerId);
       }
       return;
@@ -817,16 +819,18 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     ensurePeerConnection(remote.playerId).catch(error => setPeerStatus('Peer setup failed: ' + error.message, true));
   }
 
-  // Re-sends the host's existing local offer to the remote peer.
-  // Called when a new room snapshot arrives and the host's PC is in 'new' state
-  // (offer was sent but joiner had not subscribed yet and missed it).
+  // Re-sends the host's local offer to a joiner who subscribed after the initial offer was broadcast.
   async function reOffer(pc, remotePlayerId) {
+    const ss = pc.signalingState;
+    // Only valid to (re)create an offer from stable or when we already have a local offer
+    if (ss !== 'stable' && ss !== 'have-local-offer') return;
     try {
       PROD.call.makingOffer = true;
-      // Re-use the current local description if present; otherwise create a fresh offer.
-      if (pc.localDescription && pc.localDescription.type === 'offer') {
+      if (ss === 'have-local-offer' && pc.localDescription?.type === 'offer') {
+        // Re-send the existing offer — joiner may have missed the first broadcast
         await sendSignal('offer', { description: pc.localDescription }, remotePlayerId);
       } else {
+        // stable state — create a fresh offer
         await pc.setLocalDescription();
         await sendSignal(pc.localDescription.type, { description: pc.localDescription }, remotePlayerId);
       }
@@ -919,11 +923,21 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     if (!PROD.call.room || signal.roomCode !== PROD.call.room.code) return;
     if (signal.fromPlayerId === PROD.playerId) return;
     if (signal.toPlayerId && signal.toPlayerId !== PROD.playerId) return;
-    const pc = await ensurePeerConnection(signal.fromPlayerId);
+
+    // ICE candidates must be queued until setRemoteDescription has been called.
+    // Applying them before the remote description is set throws "remote description was null".
     if (signal.type === 'candidate') {
-      try { await pc.addIceCandidate(signal.payload.candidate); } catch (error) { if (!PROD.call.ignoreOffer) throw error; }
+      if (!PROD.call.pc || !PROD.call.pc.remoteDescription) {
+        PROD.call._pendingCandidates.push(signal.payload.candidate);
+        return;
+      }
+      try { await PROD.call.pc.addIceCandidate(signal.payload.candidate); }
+      catch (err) { if (!PROD.call.ignoreOffer) console.warn('[ARIA] addIceCandidate:', err.message); }
       return;
     }
+
+    const pc = await ensurePeerConnection(signal.fromPlayerId);
+
     if (signal.type === 'offer' || signal.type === 'answer') {
       const description = signal.payload.description;
       const readyForOffer = !PROD.call.makingOffer && (pc.signalingState === 'stable' || PROD.call.isSettingRemoteAnswerPending);
@@ -933,11 +947,19 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
       PROD.call.isSettingRemoteAnswerPending = description.type === 'answer';
       await pc.setRemoteDescription(description);
       PROD.call.isSettingRemoteAnswerPending = false;
+
+      // Drain any ICE candidates that arrived before the remote description
+      const queued = PROD.call._pendingCandidates.splice(0);
+      for (const c of queued) {
+        try { await pc.addIceCandidate(c); } catch (_) {}
+      }
+
       if (description.type === 'offer') {
         await pc.setLocalDescription();
         await sendSignal(pc.localDescription.type, { description: pc.localDescription }, signal.fromPlayerId);
       }
     }
+
     if (signal.type === 'bye') await productionEndPeerCall('Friend ended the call', true);
   }
 
@@ -983,6 +1005,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     PROD.call.makingOffer = false;
     PROD.call.ignoreOffer = false;
     PROD.call.isSettingRemoteAnswerPending = false;
+    PROD.call._pendingCandidates = [];
     const pv = document.getElementById('peerVideoArea'); if (pv) pv.style.display = 'none';
     const lv = document.getElementById('localVideo'); if (lv) { lv.srcObject = null; lv.style.transform = ''; }
     const offerSec = document.getElementById('peerOfferSection'); if (offerSec) offerSec.style.display = 'block';

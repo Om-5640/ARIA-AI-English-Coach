@@ -221,13 +221,13 @@ function handleLaunch(btn){
 async function launchSession(){
   const gkEl=$id('groqKey'); GROQ_KEY=gkEl?gkEl.value.trim():'';
   if(!GROQ_KEY||GROQ_KEY.length<20){
-    alert('ARIA backend AI proxy is not available yet. Please start the backend and try again.');
+    showToast('Backend AI proxy not ready — please start the backend server and try again.','warn');
     if(gkEl)gkEl.focus(); return;
   }
   const nameEl=$id('userName');
   const name = nameEl?nameEl.value.trim():'';
   if(!name){
-    alert('Please enter your name!');
+    showToast('Please enter your name!','warn');
     if(nameEl)nameEl.focus(); return;
   }
   USER.name = name;
