@@ -517,6 +517,8 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     document.getElementById('createRoomPanel')?.classList.remove('active');
     document.getElementById('joinRoomPanel')?.classList.remove('active');
     document.getElementById('liveGamePanel')?.classList.remove('active');
+    // Restore chat to createRoomPanel so it's ready for the next room
+    _moveChatToPanel('createRoomPanel');
     try { ACTIVE_ACTIVITY = { type: null, status: 'idle', snapshot: null, updatedAt: Date.now() }; localStorage.removeItem(ACTIVITY_STORAGE_KEY); renderActivityBar(); } catch (_) {}
   }
 
@@ -525,6 +527,8 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     document.getElementById('joinRoomPanel')?.classList.remove('active');
     document.getElementById('liveGamePanel')?.classList.remove('active');
     document.getElementById('createRoomPanel')?.classList.add('active');
+    // Restore chat to createRoomPanel (it may have been moved to liveGamePanel during a game)
+    _moveChatToPanel('createRoomPanel');
     setTextSafe('roomCodeDisplay', room.code);
     const labels = { debate: '⚖️ DEBATE BATTLE', quiz: '⚡ QUIZ RACE', vocab: '📚 VOCAB SHOWDOWN' };
     setTextSafe('roomModeLabel', labels[mode] || String(mode).toUpperCase());
@@ -601,10 +605,25 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     }
   }
 
+  // Move competeChat + competeInputRow into targetPanelId so the chat stays visible
+  // regardless of which panel is active. Moving real DOM nodes keeps IDs unique.
+  function _moveChatToPanel(targetPanelId) {
+    const target = document.getElementById(targetPanelId);
+    if (!target) return;
+    const chat = document.getElementById('competeChat');
+    const inputRow = document.querySelector('.compete-input-row');
+    if (chat && chat.parentElement?.id !== targetPanelId) target.appendChild(chat);
+    if (inputRow && inputRow.parentElement?.id !== targetPanelId) target.appendChild(inputRow);
+  }
+
   function renderAuthoritativeGame(room, players) {
     const gs = room.gameState;
     document.getElementById('createRoomPanel')?.classList.remove('active');
     document.getElementById('liveGamePanel')?.classList.add('active');
+
+    // Move chat + input into liveGamePanel so players can communicate during the game
+    _moveChatToPanel('liveGamePanel');
+
     const me = players.find(p => p.playerId === PROD.playerId);
     const friend = players.find(p => p.playerId !== PROD.playerId) || players[0];
     setTextSafe('liveYouName', me?.displayName || currentDisplayName());
