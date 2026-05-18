@@ -173,9 +173,22 @@ async function validateGroqKey() {
   }
 }
 
+// ── Two-step confirm helper — avoids native browser confirm() dialogs ──
+const _confirmPending = {};
+function _twoStep(key, warningMsg, action) {
+  if (_confirmPending[key]) {
+    clearTimeout(_confirmPending[key]);
+    delete _confirmPending[key];
+    action();
+  } else {
+    showToast(warningMsg + ' — tap again to confirm.', 'warn', 4000);
+    _confirmPending[key] = setTimeout(() => { delete _confirmPending[key]; }, 4500);
+  }
+}
+
 // ── Logout ──
 function logoutUser() {
-  if (!confirm('Log out? Your progress is saved and you can log back in anytime.')) return;
+  _twoStep('logout', 'Log out? Your progress is saved', function() {
   // Stop mic if active
   cleanupSpeechSystems({keepState:true});
   endPeerCall('Logged out');
@@ -200,6 +213,7 @@ function logoutUser() {
   // Show login
   goScreen('screenOnboard');
   prefillOnboard();
+  }); // end _twoStep logout
 }
 
 // goScreen is patched in the main script block above
@@ -591,38 +605,43 @@ function initLiveBackground(){
 // MEMORY MANAGEMENT
 // ══════════════════════════════════════════════
 function deleteAllData(){
-  if(!confirm('Delete ALL ARIA data permanently?\n\nThis will remove your name, email, Groq API key, profile, ARIA memory, vocabulary bank, XP, streaks, sessions, quizzes, certificates, compete/debate history, rooms, and saved settings.\n\nThis cannot be undone.'))return;
-  try{
-    Object.keys(localStorage).filter(k=>k.startsWith('aria_')).forEach(k=>localStorage.removeItem(k));
-  }catch(e){}
-  cleanupSpeechSystems({keepState:true});
-  try{endPeerCall('All data deleted');}catch(e){}
-  GROQ_KEY='';
-  USER={name:'',level:'intermediate',goal:'fluent daily conversation',nativeLang:'',interests:['daily life & culture'],topic:'free conversation'};
-  MEMORY={weakAreas:{grammar:3,pronunciation:2,vocabulary:1},totalSessions:0,totalTurns:0,ariaObservations:[]};
-  SESSION={turns:0,fixes:0,words:0,history:[],feedbackLog:[],fluencyHistory:[],vocabTaught:[],corrections:[]};
-  VOCAB_STORE=[];XP={points:0,level:1,streak:0,lastSession:'',streakDays:[]};
-  document.body.classList.remove('logged-in');
-  const nav=$id('mainNav');if(nav)nav.style.display='none';
-  document.querySelectorAll('.screen').forEach(s=>{s.classList.remove('active');s.style.display='none';});
-  const onb=$id('screenOnboard');if(onb){onb.style.display='flex';onb.classList.add('active');}
-  ['userName','userEmail','groqKey','nativeLang'].forEach(id=>{const el=$id(id);if(el)el.value='';});
+  _twoStep('deleteAll', '⚠️ Delete ALL ARIA data permanently? This cannot be undone', function(){
+    try{
+      Object.keys(localStorage).filter(k=>k.startsWith('aria_')).forEach(k=>localStorage.removeItem(k));
+    }catch(e){}
+    cleanupSpeechSystems({keepState:true});
+    try{endPeerCall('All data deleted');}catch(e){}
+    GROQ_KEY='';
+    USER={name:'',level:'intermediate',goal:'fluent daily conversation',nativeLang:'',interests:['daily life & culture'],topic:'free conversation'};
+    MEMORY={weakAreas:{grammar:3,pronunciation:2,vocabulary:1},totalSessions:0,totalTurns:0,ariaObservations:[]};
+    SESSION={turns:0,fixes:0,words:0,history:[],feedbackLog:[],fluencyHistory:[],vocabTaught:[],corrections:[]};
+    VOCAB_STORE=[];XP={points:0,level:1,streak:0,lastSession:'',streakDays:[]};
+    document.body.classList.remove('logged-in');
+    const nav=$id('mainNav');if(nav)nav.style.display='none';
+    document.querySelectorAll('.screen').forEach(s=>{s.classList.remove('active');s.style.display='none';});
+    const onb=$id('screenOnboard');if(onb){onb.style.display='flex';onb.classList.add('active');}
+    ['userName','userEmail','groqKey','nativeLang'].forEach(id=>{const el=$id(id);if(el)el.value='';});
+  });
 }
 function clearARIAMemory(){
-  if(!confirm('Clear ARIA Memory permanently?\n\nThis will remove ARIA observations, weak-area patterns, fluency trends, emotional learning signals, and personalization memory.\n\nYour name, API key, XP, sessions, and vocabulary bank will stay.\n\nThis cannot be undone.'))return;
-  MEMORY.ariaObservations=[];
-  MEMORY.weakAreas={grammar:0,pronunciation:0,vocabulary:0};
-  MEMORY.fluencyTrend=[];
-  MEMORY.emotionalSignals=[];
-  saveMemory();
-  renderProfile();
+  _twoStep('clearMem', '⚠️ Clear ARIA Memory permanently? This cannot be undone', function(){
+    MEMORY.ariaObservations=[];
+    MEMORY.weakAreas={grammar:0,pronunciation:0,vocabulary:0};
+    MEMORY.fluencyTrend=[];
+    MEMORY.emotionalSignals=[];
+    saveMemory();
+    renderProfile();
+    showToast('ARIA memory cleared.','success',2500);
+  });
 }
 
 function clearVocabBank(){
-  if(!confirm('Clear Vocab Bank permanently?\n\nThis will remove every saved vocabulary word, definition, example, and vocabulary-bank entry.\n\nYour name, API key, ARIA memory, XP, and sessions will stay.\n\nThis cannot be undone.'))return;
-  VOCAB_STORE=[];
-  try{localStorage.removeItem('aria_vocab_'+USER.name);}catch(e){}
-  renderVocabStore();
+  _twoStep('clearVocab', '⚠️ Clear Vocab Bank permanently? This cannot be undone', function(){
+    VOCAB_STORE=[];
+    try{localStorage.removeItem('aria_vocab_'+USER.name);}catch(e){}
+    renderVocabStore();
+    showToast('Vocab bank cleared.','success',2500);
+  });
 }
 
 // ══════════════════════════════════════════════

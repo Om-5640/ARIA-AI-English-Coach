@@ -333,7 +333,17 @@
 
   async function productionStartCompeteRoom(mode) {
     try {
+      // Leave any existing room before creating a new one (handles "Play Again")
+      if (PROD.room?.code) {
+        await api('/api/rooms/' + PROD.room.code + '/leave', { method: 'POST', body: JSON.stringify({ playerId: PROD.playerId }) }).catch(() => {});
+      }
       safeCleanupCompeteUi();
+      storeSessionToken('');
+      PROD.room = null;
+      PROD.players = [];
+      PROD.events = [];
+      PROD.answeredQuestions.clear();
+      PROD._verdictInProgress = false;
       if (typeof cleanupActivity === 'function') cleanupActivity('compete');
       if (typeof startActivity === 'function') startActivity('compete', { mode });
       currentCompeteMode = mode;
@@ -366,11 +376,16 @@
       PROD.room = data.room;
       PROD.players = data.players || [];
       PROD.events = data.events || [];
+      PROD.answeredQuestions.clear();
+      PROD._verdictInProgress = false;
       currentCompeteMode = data.room.mode;
       if (typeof startActivity === 'function') startActivity('compete', { code, mode: currentCompeteMode });
       competeRoom = { code, players: PROD.players.map(p => p.displayName), gameActive: false, myScore: 0, friendScore: 0, questionIdx: 0, questions: [] };
       document.getElementById('joinRoomPanel')?.classList.remove('active');
       document.getElementById('createRoomPanel')?.classList.add('active');
+      _moveChatToPanel('createRoomPanel');
+      const modeLabels = { debate: '⚖️ DEBATE BATTLE', quiz: '⚡ QUIZ RACE', vocab: '📚 VOCAB SHOWDOWN' };
+      setTextSafe('roomModeLabel', modeLabels[data.room.mode] || String(data.room.mode).toUpperCase());
       setTextSafe('roomCodeDisplay', code);
       setTextSafe('roomStatus', 'Joined — waiting for the host to start.');
       setTextSafe('playerSelfName', currentDisplayName());
@@ -419,6 +434,9 @@
   async function productionDebateVerdict() {
     const gs = PROD.room?.gameState;
     if (!gs || gs.mode !== 'debate') return;
+    // Prevent duplicate calls from verdictBtn being re-rendered by WS snapshots
+    if (PROD._verdictInProgress) return;
+    PROD._verdictInProgress = true;
     const btn = document.getElementById('verdictBtn');
     if (btn) { btn.disabled = true; btn.textContent = 'AI judge is deliberating…'; }
     const players = PROD.players;
@@ -433,6 +451,7 @@
     if (!chatMessages) {
       showToast('No debate messages yet — have both players argue in chat first.', 'warn');
       if (btn) { btn.disabled = false; btn.textContent = 'End Debate & Get AI Verdict'; }
+      PROD._verdictInProgress = false;
       return;
     }
     const prompt = `You are an impartial English debate judge. Evaluate the following debate.
@@ -458,25 +477,32 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
         body: JSON.stringify({
           model: 'llama-3.3-70b-versatile',
           messages: [{ role: 'user', content: prompt }],
-          max_tokens: 500,
+          max_tokens: 600,
           temperature: 0.7
         })
       });
       const data = await res.json();
       const verdict = data.choices?.[0]?.message?.content || 'Could not get verdict.';
+      // Post verdict as a system event — both players receive it via WS
       await api('/api/rooms/' + PROD.room.code + '/events', {
         method: 'POST',
-        body: JSON.stringify({ playerId: PROD.playerId, type: 'system', payload: { text: '⚖️ AI JUDGE VERDICT:\n' + verdict } })
+        body: JSON.stringify({ playerId: PROD.playerId, type: 'system', payload: { text: '⚖️ AI JUDGE VERDICT:\n' + verdict, debateEnd: true } })
       });
-      const area = document.getElementById('liveQuestionArea'); if (area) area.style.display = 'none';
-      const result = document.getElementById('liveGameResult'); if (result) result.style.display = 'block';
-      setTextSafe('liveResultEmoji', '⚖️');
-      setTextSafe('liveResultText', 'Debate Complete!');
-      setTextSafe('liveResultSub', 'AI judge\'s verdict has been posted in the chat above.');
+      // Show result on host side immediately; guest side shows it when appendRoomEvent fires
+      _showDebateResult();
     } catch (error) {
       showToast('Could not get verdict: ' + error.message, 'error');
       if (btn) { btn.disabled = false; btn.textContent = 'End Debate & Get AI Verdict'; }
+      PROD._verdictInProgress = false;
     }
+  }
+
+  function _showDebateResult() {
+    const area = document.getElementById('liveQuestionArea'); if (area) area.style.display = 'none';
+    const result = document.getElementById('liveGameResult'); if (result) result.style.display = 'block';
+    setTextSafe('liveResultEmoji', '⚖️');
+    setTextSafe('liveResultText', 'Debate Complete!');
+    setTextSafe('liveResultSub', 'AI verdict is in the chat above. Well argued!');
   }
 
   async function productionAnswerCompeteQ(idx) {
@@ -519,6 +545,10 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     document.getElementById('liveGamePanel')?.classList.remove('active');
     // Restore chat to createRoomPanel so it's ready for the next room
     _moveChatToPanel('createRoomPanel');
+    // Hide leave button and reset debate-mode placeholder
+    const lb = document.getElementById('liveLeaveBtn'); if (lb) lb.style.display = 'none';
+    // Reset debate-mode placeholder
+    const ci = document.getElementById('competeInput'); if (ci) ci.placeholder = 'Send a message…';
     try { ACTIVE_ACTIVITY = { type: null, status: 'idle', snapshot: null, updatedAt: Date.now() }; localStorage.removeItem(ACTIVITY_STORAGE_KEY); renderActivityBar(); } catch (_) {}
   }
 
@@ -602,6 +632,23 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     if (event.type === 'chat' || event.type === 'system') {
       PROD.events.push(event);
       renderChatEvents(PROD.events);
+      // Guest sees the debate result screen when the verdict system event arrives
+      if (event.type === 'system' && event.payload?.debateEnd && PROD.room?.hostPlayerId !== PROD.playerId) {
+        _showDebateResult();
+      }
+    }
+  }
+
+  // Two-step confirm inside the PROD scope (avoids blocking confirm())
+  const _prodConfirmPending = {};
+  function _twoStepGame(key, warningMsg, action) {
+    if (_prodConfirmPending[key]) {
+      clearTimeout(_prodConfirmPending[key]);
+      delete _prodConfirmPending[key];
+      action();
+    } else {
+      if (typeof showToast === 'function') showToast(warningMsg + ' — tap again to confirm.', 'warn', 4000);
+      _prodConfirmPending[key] = setTimeout(() => { delete _prodConfirmPending[key]; }, 4500);
     }
   }
 
@@ -633,11 +680,25 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     setTextSafe('liveGameLabel', ({ quiz: '⚡ QUIZ RACE', debate: '⚖️ DEBATE BATTLE', vocab: '📚 VOCAB SHOWDOWN' }[room.mode] || 'LIVE GAME'));
     const result = document.getElementById('liveGameResult'); if (result) result.style.display = 'none';
     const area = document.getElementById('liveQuestionArea'); if (area) area.style.display = 'block';
+    // Ensure a leave/forfeit button is visible during active play
+    let leaveBtn = document.getElementById('liveLeaveBtn');
+    if (!leaveBtn) {
+      leaveBtn = document.createElement('button');
+      leaveBtn.id = 'liveLeaveBtn';
+      leaveBtn.textContent = '🚪 Leave Game';
+      leaveBtn.style.cssText = 'margin-top:12px;background:none;border:1px solid var(--red,#e55);border-radius:8px;padding:7px 14px;color:var(--red,#e55);font-size:12px;font-weight:600;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif;';
+      leaveBtn.onclick = function() { _twoStepGame('leaveGame', '🚪 Leave game and forfeit?', function() { productionCloseCompeteRoom(); }); };
+      const panel = document.getElementById('liveGamePanel');
+      if (panel) panel.appendChild(leaveBtn);
+    }
+    leaveBtn.style.display = 'block';
 
     if (room.mode === 'debate') {
       const myStance = gs.stanceFor === PROD.playerId ? 'FOR — argue in favour' : 'AGAINST — argue against';
       setTextSafe('liveQLabel', 'Your stance: ' + myStance);
       setTextSafe('liveQuestion', gs.topic || 'Debate topic loading…');
+      const ci = document.getElementById('competeInput');
+      if (ci) ci.placeholder = 'Type your argument…';
       const opts = document.getElementById('liveOptions');
       if (opts) {
         const isHost = room.hostPlayerId === PROD.playerId;
@@ -673,6 +734,8 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     document.getElementById('liveGamePanel')?.classList.add('active');
     const area = document.getElementById('liveQuestionArea'); if (area) area.style.display = 'none';
     const result = document.getElementById('liveGameResult'); if (result) result.style.display = 'block';
+    // Hide leave button on game end
+    const lb = document.getElementById('liveLeaveBtn'); if (lb) lb.style.display = 'none';
     const myScore = Number(gs.scores?.[PROD.playerId] || 0);
     const other = players.find(p => p.playerId !== PROD.playerId);
     const otherScore = Number(gs.scores?.[other?.playerId] || 0);
@@ -752,7 +815,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
       PROD.call.mode = data.room.mode === 'call-voice' ? 'voice' : 'video';
       PROD.call.polite = true;
       await prepareLocalMedia(PROD.call.mode);
-      showPeerArea(code, 'Joined — connecting to your friend…');
+      showPeerArea(code, 'Joined — connecting to your friend…', true);
       applyCallSnapshot(data);
       subscribeRoom(code);
     } catch (error) {
@@ -799,14 +862,33 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     }
 
     // Only attach video element if we actually have a video track
-    if (PROD.call.localStream.getVideoTracks().length > 0) {
-      const lv = document.getElementById('localVideo');
-      if (lv) {
+    const hasVideo = PROD.call.localStream.getVideoTracks().length > 0;
+    const lv = document.getElementById('localVideo');
+    if (lv) {
+      if (hasVideo) {
         lv.srcObject = PROD.call.localStream;
         lv.muted = true;
         lv.style.transform = 'scaleX(-1)';
+        lv.style.display = '';
         await lv.play().catch(() => {});
+      } else {
+        lv.style.display = 'none';
       }
+    }
+    // Show/hide audio-only indicator
+    let audioIndicator = document.getElementById('peerAudioOnlyIndicator');
+    if (!hasVideo) {
+      if (!audioIndicator) {
+        audioIndicator = document.createElement('div');
+        audioIndicator.id = 'peerAudioOnlyIndicator';
+        audioIndicator.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px;background:var(--card);border-radius:12px;color:var(--text2);font-family:Plus Jakarta Sans,sans-serif;font-size:14px;';
+        audioIndicator.innerHTML = '<div style="font-size:48px">🎙️</div><div style="font-weight:600">Voice Call</div><div style="font-size:12px;color:var(--text3)">Camera not available — audio only</div>';
+        const pv = document.getElementById('peerVideoArea');
+        if (pv) pv.insertBefore(audioIndicator, pv.firstChild);
+      }
+      audioIndicator.style.display = 'flex';
+    } else if (audioIndicator) {
+      audioIndicator.style.display = 'none';
     }
     try { window.renderCallState(); } catch (_) {}
   }
@@ -982,9 +1064,11 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     if (signal.type === 'bye') await productionEndPeerCall('Friend ended the call', true);
   }
 
-  function showPeerArea(code, status) {
+  function showPeerArea(code, status, isGuest) {
     const pv = document.getElementById('peerVideoArea'); if (pv) pv.style.display = 'block';
-    const offerSec = document.getElementById('peerOfferSection'); if (offerSec) offerSec.style.display = 'block';
+    // Guests who joined via code don't need to see the "share this code" section
+    const offerSec = document.getElementById('peerOfferSection');
+    if (offerSec) offerSec.style.display = isGuest ? 'none' : 'block';
     const box = document.getElementById('peerOfferBox'); if (box) box.value = code;
     setPeerStatus(status);
   }
@@ -1027,7 +1111,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     PROD.call._pendingCandidates = [];
     const pv = document.getElementById('peerVideoArea'); if (pv) pv.style.display = 'none';
     const lv = document.getElementById('localVideo'); if (lv) { lv.srcObject = null; lv.style.transform = ''; }
-    const offerSec = document.getElementById('peerOfferSection'); if (offerSec) offerSec.style.display = 'block';
+    const offerSec = document.getElementById('peerOfferSection'); if (offerSec) offerSec.style.display = 'none';
     const offer = document.getElementById('peerOfferBox'); if (offer) offer.value = '';
     const answer = document.getElementById('peerAnswerInput'); if (answer) answer.value = '';
     try { updateActiveCall({ status: 'ended', endedAt: Date.now(), reason: reason || 'Call ended' }); } catch (_) {}
