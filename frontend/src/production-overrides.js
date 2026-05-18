@@ -436,7 +436,6 @@
   async function productionDebateVerdict() {
     const gs = PROD.room?.gameState;
     if (!gs || gs.mode !== 'debate') return;
-    // Prevent duplicate calls from verdictBtn being re-rendered by WS snapshots
     if (PROD._verdictInProgress) return;
     PROD._verdictInProgress = true;
     const btn = document.getElementById('verdictBtn');
@@ -456,22 +455,20 @@
       PROD._verdictInProgress = false;
       return;
     }
-    const prompt = `You are an impartial English debate judge. Evaluate the following debate.
+    const p1name = forPlayer?.displayName || 'Player 1';
+    const p2name = againstPlayer?.displayName || 'Player 2';
+    const prompt = `You are an impartial English debate judge. Respond ONLY with valid JSON — no markdown fences, no extra text.
 
 Topic: "${gs.topic}"
-${forPlayer?.displayName || 'Player 1'} is arguing FOR.
-${againstPlayer?.displayName || 'Player 2'} is arguing AGAINST.
+${p1name} argues FOR. ${p2name} argues AGAINST.
 
 Transcript:
 ${chatMessages}
 
-Please provide:
-1. ${forPlayer?.displayName || 'Player 1'}'s best arguments (2-3 sentences)
-2. ${againstPlayer?.displayName || 'Player 2'}'s best arguments (2-3 sentences)
-3. Winner and reason (2-3 sentences)
-4. Score out of 10 for each player
+Return exactly this JSON structure:
+{"winner_name":"${p1name} or ${p2name} or null","draw":false,"topic":"${gs.topic}","reasoning":"2 sentences explaining the decision, referring to argument quality and English expression","p1":{"name":"${p1name}","score":7,"best":"One sentence — their single strongest argument","improve":"One sentence — the most important thing to work on"},"p2":{"name":"${p2name}","score":5,"best":"One sentence — their single strongest argument","improve":"One sentence — the most important thing to work on"}}
 
-Be concise, fair, and encouraging. Focus on argument quality and English expression.`;
+Rules: scores 1-10, winner_name must exactly match one player name or be null for a draw, draw:true only if scores are tied.`;
     try {
       const res = await originalFetch('/api/ai/chat', {
         method: 'POST',
@@ -479,19 +476,24 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
         body: JSON.stringify({
           model: 'llama-3.3-70b-versatile',
           messages: [{ role: 'user', content: prompt }],
-          max_tokens: 600,
-          temperature: 0.7
+          max_tokens: 400,
+          temperature: 0.4
         })
       });
       const data = await res.json();
-      const verdict = data.choices?.[0]?.message?.content || 'Could not get verdict.';
-      // Post verdict as a system event — both players receive it via WS
+      const raw = data.choices?.[0]?.message?.content || '';
+      let verdict = null;
+      try {
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        verdict = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
+      } catch (_) {
+        verdict = { winner_name: null, draw: true, topic: gs.topic, reasoning: raw.slice(0, 300), p1: { name: p1name, score: 5, best: '', improve: '' }, p2: { name: p2name, score: 5, best: '', improve: '' } };
+      }
       await api('/api/rooms/' + PROD.room.code + '/events', {
         method: 'POST',
-        body: JSON.stringify({ playerId: PROD.playerId, type: 'system', payload: { text: '⚖️ AI JUDGE VERDICT:\n' + verdict, debateEnd: true } })
+        body: JSON.stringify({ playerId: PROD.playerId, type: 'system', payload: { text: 'Debate concluded. See the verdict panel.', debateEnd: true, verdict } })
       });
-      // Show result on host side immediately; guest side shows it when appendRoomEvent fires
-      _showDebateResult();
+      _renderDebateVerdict(verdict, PROD.playerId);
     } catch (error) {
       showToast('Could not get verdict: ' + error.message, 'error');
       if (btn) { btn.disabled = false; btn.textContent = 'End Debate & Get AI Verdict'; }
@@ -499,12 +501,86 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     }
   }
 
+  function _renderDebateVerdict(v, myPlayerId) {
+    const area = document.getElementById('liveQuestionArea'); if (area) area.style.display = 'none';
+    const lb = document.getElementById('liveLeaveBtn'); if (lb) lb.style.display = 'none';
+    const result = document.getElementById('liveGameResult');
+    if (!result) return;
+
+    const myPlayer = PROD.players.find(p => p.playerId === myPlayerId);
+    const myName = myPlayer?.displayName || '';
+    const isDraw = v.draw || !v.winner_name;
+    const iWon = !isDraw && v.winner_name === myName;
+
+    const myData = v.p1?.name === myName ? v.p1 : (v.p2?.name === myName ? v.p2 : v.p1) || v.p1 || {};
+    const theirData = myData === v.p1 ? (v.p2 || {}) : (v.p1 || {});
+
+    function bar(score) {
+      const pct = Math.round(((score || 0) / 10) * 100);
+      return '<div class="vp-bar"><div class="vp-bar-fill" style="width:' + pct + '%"></div></div>';
+    }
+    function row(label, text, cls) {
+      if (!text) return '';
+      return '<div class="vp-row-label' + (cls ? ' ' + cls : '') + '">' + label + '</div><div class="vp-row-text">' + escapeHTML(text) + '</div>';
+    }
+
+    const myScore = myData.score || 0;
+    const theirScore = theirData.score || 0;
+
+    result.style.display = 'block';
+    result.innerHTML = sanitizeHTML(
+      '<div class="dv-wrap">' +
+        (iWon ? '<div class="dv-confetti" id="dvConfetti"></div>' : '') +
+        '<div class="dv-header">' +
+          '<div class="dv-label">AI Judge Verdict</div>' +
+          '<div class="dv-topic">' + escapeHTML(v.topic || 'Debate') + '</div>' +
+        '</div>' +
+        '<div class="dv-outcome ' + (iWon ? 'dv-won' : isDraw ? 'dv-draw' : 'dv-lost') + '">' +
+          '<div class="dv-outcome-icon">' + (iWon ? '🏆' : isDraw ? '🤝' : '📚') + '</div>' +
+          '<div class="dv-outcome-title">' + (iWon ? 'You won!' : isDraw ? "It's a draw!" : (v.winner_name ? escapeHTML(v.winner_name) + ' wins' : 'Debate complete')) + '</div>' +
+          '<div class="dv-outcome-reason">' + escapeHTML(v.reasoning || '') + '</div>' +
+        '</div>' +
+        '<div class="dv-players">' +
+          '<div class="dv-player ' + (iWon ? 'dv-player-winner' : '') + '">' +
+            '<div class="dv-player-name">' + escapeHTML(myData.name || 'You') + (iWon ? ' <span class="dv-crown">Winner</span>' : '') + '</div>' +
+            '<div class="dv-score-row"><span class="dv-score-num">' + myScore + '</span><span class="dv-score-denom">/10</span>' + bar(myScore) + '</div>' +
+            row('Best argument', myData.best) +
+            row('To improve', myData.improve, 'improve') +
+          '</div>' +
+          '<div class="dv-divider"></div>' +
+          '<div class="dv-player ' + (!iWon && !isDraw ? 'dv-player-winner' : '') + '">' +
+            '<div class="dv-player-name">' + escapeHTML(theirData.name || 'Opponent') + (!iWon && !isDraw ? ' <span class="dv-crown">Winner</span>' : '') + '</div>' +
+            '<div class="dv-score-row"><span class="dv-score-num">' + theirScore + '</span><span class="dv-score-denom">/10</span>' + bar(theirScore) + '</div>' +
+            row('Best argument', theirData.best) +
+            row('To improve', theirData.improve, 'improve') +
+          '</div>' +
+        '</div>' +
+        '<div class="dv-actions">' +
+          '<button class="btn-sm primary" onclick="startCompeteRoom(currentCompeteMode)">Play Again</button>' +
+          '<button class="btn-sm" onclick="closeCompeteRoom()">Leave</button>' +
+        '</div>' +
+      '</div>'
+    );
+
+    if (iWon) _launchConfetti('dvConfetti');
+  }
+
+  function _launchConfetti(containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const colors = ['#e8621a','#d4820a','#2d7d4f','#6b3fa0','#1a6eb5','#f0874a'];
+    for (let i = 0; i < 36; i++) {
+      const p = document.createElement('div');
+      p.className = 'dv-confetti-piece';
+      p.style.cssText = 'left:' + (Math.random() * 100) + '%;background:' + colors[i % colors.length] + ';animation-delay:' + (Math.random() * 1) + 's;animation-duration:' + (1.4 + Math.random() * 1) + 's;width:' + (5 + Math.random() * 7) + 'px;height:' + (5 + Math.random() * 7) + 'px;border-radius:' + (Math.random() > 0.5 ? '50%' : '2px') + ';';
+      container.appendChild(p);
+    }
+  }
+
   function _showDebateResult() {
     const area = document.getElementById('liveQuestionArea'); if (area) area.style.display = 'none';
     const result = document.getElementById('liveGameResult'); if (result) result.style.display = 'block';
-    setTextSafe('liveResultEmoji', '⚖️');
-    setTextSafe('liveResultText', 'Debate Complete!');
-    setTextSafe('liveResultSub', 'AI verdict is in the chat above. Well argued!');
+    const lb = document.getElementById('liveLeaveBtn'); if (lb) lb.style.display = 'none';
   }
 
   async function productionAnswerCompeteQ(idx) {
@@ -634,9 +710,9 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     if (event.type === 'chat' || event.type === 'system') {
       PROD.events.push(event);
       renderChatEvents(PROD.events);
-      // Guest sees the debate result screen when the verdict system event arrives
       if (event.type === 'system' && event.payload?.debateEnd && PROD.room?.hostPlayerId !== PROD.playerId) {
-        _showDebateResult();
+        if (event.payload.verdict) _renderDebateVerdict(event.payload.verdict, PROD.playerId);
+        else _showDebateResult();
       }
     }
   }
@@ -1295,6 +1371,50 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
       @media(max-width:600px){
         #ariaToastContainer{right:10px !important;left:10px !important;max-width:none !important}
         #ariaProdNetBadge{bottom:calc(70px + env(safe-area-inset-bottom,0px)) !important}
+      }
+
+      /* ── Debate Verdict Screen ── */
+      .dv-wrap{border-radius:14px;overflow:hidden;background:#fff;border:1.5px solid var(--border2);position:relative}
+      .dv-confetti{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:0}
+      .dv-confetti-piece{position:absolute;top:-12px;animation:dvConfettiFall linear forwards}
+      @keyframes dvConfettiFall{to{transform:translateY(600px) rotate(540deg);opacity:0}}
+
+      .dv-header{padding:14px 20px;border-bottom:1px solid var(--border);background:var(--cream);text-align:center;position:relative;z-index:1}
+      .dv-label{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:var(--text3);margin-bottom:4px}
+      .dv-topic{font-family:'Instrument Serif',serif;font-size:16px;font-weight:400;color:var(--text)}
+
+      .dv-outcome{padding:20px;text-align:center;border-bottom:1px solid var(--border);position:relative;z-index:1}
+      .dv-won .dv-outcome{background:linear-gradient(160deg,var(--green-pale) 0%,#fff 60%)}
+      .dv-lost .dv-outcome{background:var(--cream)}
+      .dv-draw .dv-outcome{background:var(--cream)}
+      .dv-outcome-icon{font-size:36px;margin-bottom:8px}
+      .dv-outcome-title{font-family:'Instrument Serif',serif;font-size:22px;color:var(--text);margin-bottom:6px}
+      .dv-outcome-reason{font-size:13px;color:var(--text2);line-height:1.65;max-width:380px;margin:0 auto}
+
+      .dv-players{display:grid;grid-template-columns:1fr 1px 1fr;border-bottom:1px solid var(--border)}
+      .dv-divider{background:var(--border)}
+      .dv-player{padding:18px}
+      .dv-player-winner{background:linear-gradient(160deg,var(--green-pale) 0%,#fff 70%)}
+      .dv-player-name{font-size:13px;font-weight:700;color:var(--text);margin-bottom:10px;display:flex;align-items:center;gap:8px}
+      .dv-crown{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;background:var(--green-pale);color:var(--green);border-radius:4px;padding:2px 6px}
+
+      .dv-score-row{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+      .dv-score-num{font-family:'Instrument Serif',serif;font-size:34px;line-height:1;color:var(--text)}
+      .dv-score-denom{font-size:14px;color:var(--text3);margin-right:8px}
+      .dv-bar{flex:1;height:5px;background:var(--border);border-radius:4px;overflow:hidden}
+      .dv-bar-fill{height:100%;background:var(--orange);border-radius:4px;transition:width .7s cubic-bezier(.4,0,.2,1) .2s}
+      .dv-player-winner .dv-bar-fill{background:var(--green)}
+
+      .dv-row-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--text3);margin-bottom:3px;margin-top:10px}
+      .dv-row-label.improve{color:var(--orange)}
+      .dv-row-text{font-size:12.5px;color:var(--text2);line-height:1.55}
+      .dv-row-text.improve{color:var(--brown)}
+
+      .dv-actions{display:flex;gap:10px;padding:14px 20px;justify-content:center}
+
+      @media(max-width:600px){
+        .dv-players{grid-template-columns:1fr}
+        .dv-divider{height:1px;width:auto}
       }
     `;
     document.head.appendChild(s);
