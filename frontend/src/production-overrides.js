@@ -266,7 +266,9 @@
       startPeerCall: productionStartPeerCall,
       acceptOffer: productionJoinPeerCall,
       endPeerCall: productionEndPeerCall,
-      copyPeerOffer: copyPeerRoomCode
+      copyPeerOffer: copyPeerRoomCode,
+      toggleMute: productionToggleMute,
+      toggleCamera: productionToggleCamera
     };
 
     // Override renderCallState: the original checks the HTML's `let localStream` which is
@@ -675,8 +677,8 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     const friend = players.find(p => p.playerId !== PROD.playerId) || players[0];
     setTextSafe('liveYouName', me?.displayName || currentDisplayName());
     setTextSafe('liveFriendName', friend?.displayName || 'Friend');
-    setTextSafe('liveYouScore', String(gs.scores?.[PROD.playerId] || 0));
-    setTextSafe('liveFriendScore', String(gs.scores?.[friend?.playerId] || 0));
+    _setScoreAnimated('liveYouScore', gs.scores?.[PROD.playerId] || 0);
+    _setScoreAnimated('liveFriendScore', gs.scores?.[friend?.playerId] || 0);
     setTextSafe('liveGameLabel', ({ quiz: '⚡ QUIZ RACE', debate: '⚖️ DEBATE BATTLE', vocab: '📚 VOCAB SHOWDOWN' }[room.mode] || 'LIVE GAME'));
     const result = document.getElementById('liveGameResult'); if (result) result.style.display = 'none';
     const area = document.getElementById('liveQuestionArea'); if (area) area.style.display = 'block';
@@ -752,6 +754,19 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
 
   function setTextSafe(id, value) { const el = document.getElementById(id); if (el) el.textContent = value; }
   function safeSet(el, html) { if (typeof safeSetInnerHTML === 'function') safeSetInnerHTML(el, html); else el.innerHTML = html; }
+
+  // Animate score element with a scale-bounce when score increases
+  function _setScoreAnimated(id, newScore) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const prev = parseInt(el.textContent, 10) || 0;
+    el.textContent = String(newScore);
+    if (newScore > prev) {
+      el.style.transform = 'scale(1.6)';
+      // Let the CSS transition (.3s cubic-bezier bounce) animate back to scale(1)
+      requestAnimationFrame(() => requestAnimationFrame(() => { el.style.transform = 'scale(1)'; }));
+    }
+  }
 
   function patchPeerUi() {
     const peerSection = document.getElementById('peerChatSection');
@@ -969,6 +984,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
         setPeerStatus('Connected');
         const offerSec = document.getElementById('peerOfferSection');
         if (offerSec) offerSec.style.display = 'none';
+        _ensureCallControls();
         try { updateActiveCall({ status: 'connected', connectedAt: Date.now() }); } catch (_) {}
         try { window.renderCallState(); } catch (_) {}
       };
@@ -985,6 +1001,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
         setPeerStatus('Connected');
         const offerSec = document.getElementById('peerOfferSection');
         if (offerSec) offerSec.style.display = 'none';
+        _ensureCallControls();
         try { updateActiveCall({ status: 'connected', connectedAt: Date.now() }); } catch (_) {}
         try { window.renderCallState(); } catch (_) {}
       }
@@ -1064,6 +1081,43 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     if (signal.type === 'bye') await productionEndPeerCall('Friend ended the call', true);
   }
 
+  // Inject mute + camera toggle controls once per active call
+  function _ensureCallControls() {
+    const pv = document.getElementById('peerVideoArea');
+    if (!pv || document.getElementById('peerCallControls')) return;
+    const bar = document.createElement('div');
+    bar.id = 'peerCallControls';
+    bar.style.cssText = 'display:flex;gap:10px;justify-content:center;margin-top:10px;margin-bottom:4px;';
+    const hasVideo = PROD.call.localStream?.getVideoTracks().length > 0;
+    bar.innerHTML =
+      '<button id="peerMuteBtn" onclick="window.ARIA_PRODUCTION.fn.toggleMute()" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif;color:var(--text1)">🎙️ Mute</button>' +
+      (hasVideo ? '<button id="peerCamBtn" onclick="window.ARIA_PRODUCTION.fn.toggleCamera()" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif;color:var(--text1)">📷 Camera</button>' : '') +
+      '<button onclick="endPeerCall(\'Left call\')" style="background:none;border:1px solid var(--red,#e55);border-radius:10px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif;color:var(--red,#e55)">📵 End</button>';
+    pv.appendChild(bar);
+  }
+
+  function productionToggleMute() {
+    if (!PROD.call.localStream) return;
+    const audioTrack = PROD.call.localStream.getAudioTracks()[0];
+    if (!audioTrack) return;
+    audioTrack.enabled = !audioTrack.enabled;
+    const btn = document.getElementById('peerMuteBtn');
+    if (btn) btn.textContent = audioTrack.enabled ? '🎙️ Mute' : '🔇 Unmuted';
+    setPeerStatus(audioTrack.enabled ? 'Microphone on' : 'Microphone muted');
+  }
+
+  function productionToggleCamera() {
+    if (!PROD.call.localStream) return;
+    const videoTrack = PROD.call.localStream.getVideoTracks()[0];
+    if (!videoTrack) return;
+    videoTrack.enabled = !videoTrack.enabled;
+    const lv = document.getElementById('localVideo');
+    if (lv) lv.style.opacity = videoTrack.enabled ? '1' : '0.3';
+    const btn = document.getElementById('peerCamBtn');
+    if (btn) btn.textContent = videoTrack.enabled ? '📷 Camera' : '📷 Camera off';
+    setPeerStatus(videoTrack.enabled ? 'Camera on' : 'Camera off');
+  }
+
   function showPeerArea(code, status, isGuest) {
     const pv = document.getElementById('peerVideoArea'); if (pv) pv.style.display = 'block';
     // Guests who joined via code don't need to see the "share this code" section
@@ -1114,6 +1168,8 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     const offerSec = document.getElementById('peerOfferSection'); if (offerSec) offerSec.style.display = 'none';
     const offer = document.getElementById('peerOfferBox'); if (offer) offer.value = '';
     const answer = document.getElementById('peerAnswerInput'); if (answer) answer.value = '';
+    const controls = document.getElementById('peerCallControls'); if (controls) controls.remove();
+    const audioInd = document.getElementById('peerAudioOnlyIndicator'); if (audioInd) audioInd.style.display = 'none';
     try { updateActiveCall({ status: 'ended', endedAt: Date.now(), reason: reason || 'Call ended' }); } catch (_) {}
     try { window.renderCallState(); } catch (_) {}
     if (!silent) setPeerStatus(reason || 'Call ended.');
