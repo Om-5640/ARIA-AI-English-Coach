@@ -641,28 +641,20 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     }
   }
 
-  // Two-step confirm inside the PROD scope (avoids blocking confirm())
-  const _prodConfirmPending = {};
-  function _twoStepGame(key, warningMsg, action) {
-    if (_prodConfirmPending[key]) {
-      clearTimeout(_prodConfirmPending[key]);
-      delete _prodConfirmPending[key];
-      action();
-    } else {
-      if (typeof showToast === 'function') showToast(warningMsg + ' — tap again to confirm.', 'warn', 4000);
-      _prodConfirmPending[key] = setTimeout(() => { delete _prodConfirmPending[key]; }, 4500);
-    }
-  }
-
   // Move competeChat + competeInputRow into targetPanelId so the chat stays visible
   // regardless of which panel is active. Moving real DOM nodes keeps IDs unique.
   function _moveChatToPanel(targetPanelId) {
-    const target = document.getElementById(targetPanelId);
+    const slotId = targetPanelId === 'liveGamePanel' ? 'liveGameChatSlot' : 'roomChatSlot';
+    const target = document.getElementById(slotId) || document.getElementById(targetPanelId);
     if (!target) return;
     const chat = document.getElementById('competeChat');
     const inputRow = document.querySelector('.compete-input-row');
-    if (chat && chat.parentElement?.id !== targetPanelId) target.appendChild(chat);
-    if (inputRow && inputRow.parentElement?.id !== targetPanelId) target.appendChild(inputRow);
+    if (chat && chat.parentElement !== target) {
+      const empty = target.querySelector('.live-chat-empty');
+      if (empty) empty.style.display = 'none';
+      target.appendChild(chat);
+    }
+    if (inputRow && inputRow.parentElement !== target) target.appendChild(inputRow);
   }
 
   function renderAuthoritativeGame(room, players) {
@@ -689,18 +681,18 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
       leaveBtn.id = 'liveLeaveBtn';
       leaveBtn.textContent = '🚪 Leave Game';
       leaveBtn.style.cssText = 'margin-top:12px;background:none;border:1px solid var(--red,#e55);border-radius:8px;padding:7px 14px;color:var(--red,#e55);font-size:12px;font-weight:600;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif;';
-      leaveBtn.onclick = function() { _twoStepGame('leaveGame', '🚪 Leave game and forfeit?', function() { productionCloseCompeteRoom(); }); };
+      leaveBtn.onclick = function() { _twoStep('leaveGame', 'Leave game and forfeit?', productionCloseCompeteRoom); };
       const panel = document.getElementById('liveGamePanel');
       if (panel) panel.appendChild(leaveBtn);
     }
-    leaveBtn.style.display = 'block';
+    if (leaveBtn.style.display !== 'block') leaveBtn.style.display = 'block';
 
     if (room.mode === 'debate') {
       const myStance = gs.stanceFor === PROD.playerId ? 'FOR — argue in favour' : 'AGAINST — argue against';
       setTextSafe('liveQLabel', 'Your stance: ' + myStance);
       setTextSafe('liveQuestion', gs.topic || 'Debate topic loading…');
       const ci = document.getElementById('competeInput');
-      if (ci) ci.placeholder = 'Type your argument…';
+      if (ci && ci.placeholder !== 'Type your argument…') ci.placeholder = 'Type your argument…';
       const opts = document.getElementById('liveOptions');
       if (opts) {
         const isHost = room.hostPlayerId === PROD.playerId;
@@ -755,11 +747,11 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
   function setTextSafe(id, value) { const el = document.getElementById(id); if (el) el.textContent = value; }
   function safeSet(el, html) { if (typeof safeSetInnerHTML === 'function') safeSetInnerHTML(el, html); else el.innerHTML = html; }
 
-  // Animate score element with a scale-bounce when score increases
   function _setScoreAnimated(id, newScore) {
     const el = document.getElementById(id);
     if (!el) return;
     const prev = parseInt(el.textContent, 10) || 0;
+    if (newScore === prev) return;
     el.textContent = String(newScore);
     if (newScore > prev) {
       el.style.transform = 'scale(1.6)';
@@ -1090,9 +1082,9 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     bar.style.cssText = 'display:flex;gap:10px;justify-content:center;margin-top:10px;margin-bottom:4px;';
     const hasVideo = PROD.call.localStream?.getVideoTracks().length > 0;
     bar.innerHTML =
-      '<button id="peerMuteBtn" onclick="window.ARIA_PRODUCTION.fn.toggleMute()" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif;color:var(--text1)">🎙️ Mute</button>' +
-      (hasVideo ? '<button id="peerCamBtn" onclick="window.ARIA_PRODUCTION.fn.toggleCamera()" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif;color:var(--text1)">📷 Camera</button>' : '') +
-      '<button onclick="endPeerCall(\'Left call\')" style="background:none;border:1px solid var(--red,#e55);border-radius:10px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif;color:var(--red,#e55)">📵 End</button>';
+      '<button id="peerMuteBtn" onclick="window.ARIA_PRODUCTION.fn.toggleMute()" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif;color:var(--text1)">Mute</button>' +
+      (hasVideo ? '<button id="peerCamBtn" onclick="window.ARIA_PRODUCTION.fn.toggleCamera()" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif;color:var(--text1)">Camera</button>' : '') +
+      '<button onclick="endPeerCall(\'Left call\')" style="background:none;border:1px solid var(--red,#e55);border-radius:10px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:Plus Jakarta Sans,sans-serif;color:var(--red,#e55)">End Call</button>';
     pv.appendChild(bar);
   }
 
@@ -1102,7 +1094,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     if (!audioTrack) return;
     audioTrack.enabled = !audioTrack.enabled;
     const btn = document.getElementById('peerMuteBtn');
-    if (btn) btn.textContent = audioTrack.enabled ? '🎙️ Mute' : '🔇 Unmuted';
+    if (btn) btn.textContent = audioTrack.enabled ? 'Mute' : 'Unmute';
     setPeerStatus(audioTrack.enabled ? 'Microphone on' : 'Microphone muted');
   }
 
@@ -1114,7 +1106,7 @@ Be concise, fair, and encouraging. Focus on argument quality and English express
     const lv = document.getElementById('localVideo');
     if (lv) lv.style.opacity = videoTrack.enabled ? '1' : '0.3';
     const btn = document.getElementById('peerCamBtn');
-    if (btn) btn.textContent = videoTrack.enabled ? '📷 Camera' : '📷 Camera off';
+    if (btn) btn.textContent = videoTrack.enabled ? 'Camera' : 'Camera off';
     setPeerStatus(videoTrack.enabled ? 'Camera on' : 'Camera off');
   }
 
