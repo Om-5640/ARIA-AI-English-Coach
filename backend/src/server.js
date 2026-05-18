@@ -9,6 +9,7 @@ import compression from 'compression';
 import rateLimit from 'express-rate-limit';
 import { createStoreFromEnv } from './services/store.js';
 import { RealtimeHub } from './realtime/hub.js';
+import { createPubSub } from './realtime/pubsub.js';
 import { roomsRouter } from './routes/rooms.js';
 import { webrtcRouter } from './routes/webrtc.js';
 import { aiRouter } from './routes/ai.js';
@@ -33,6 +34,7 @@ const config = {
 };
 
 const store = createStoreFromEnv();
+const pubsub = await createPubSub();
 const app = express();
 
 app.set('trust proxy', 1);
@@ -54,7 +56,7 @@ app.use(rateLimit({
 }));
 
 const server = http.createServer(app);
-const hub = new RealtimeHub({ store });
+const hub = new RealtimeHub({ store, pubsub });
 hub.attach(server);
 
 app.get('/api/health', (req, res) => {

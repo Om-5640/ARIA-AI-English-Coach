@@ -1,5 +1,6 @@
 import { randomInt } from 'node:crypto';
 import { COMPETE_QUESTIONS } from '../data/competeQuestions.js';
+import { DEBATE_TOPICS } from '../data/debateTopics.js';
 
 export function randomQuestions(count = 8) {
   const copy = COMPETE_QUESTIONS.map((q, idx) => ({ ...q, id: `q_${idx}`, opts: [...q.opts] }));
@@ -10,7 +11,24 @@ export function randomQuestions(count = 8) {
   return copy.slice(0, count);
 }
 
-export function createGameState(playerIds, mode = 'quiz') {
+export function createGameState(playerIds, mode = 'quiz', customTopic = '') {
+  if (mode === 'debate') {
+    const topic = customTopic || DEBATE_TOPICS[randomInt(DEBATE_TOPICS.length)];
+    const shuffled = [...playerIds].sort(() => (randomInt(2) ? 1 : -1));
+    return {
+      mode,
+      status: 'active',
+      startedAt: new Date().toISOString(),
+      topic,
+      stanceFor: shuffled[0],
+      stanceAgainst: shuffled[1] || shuffled[0],
+      questions: [],
+      scores: Object.fromEntries(playerIds.map(id => [id, 0])),
+      answers: {},
+      winner: null,
+      version: 1
+    };
+  }
   const questions = randomQuestions(8);
   return {
     mode,

@@ -2,7 +2,7 @@ import express from 'express';
 import { z } from 'zod';
 import { newRoomCode, cleanRoomCode, newPlayerId, newSessionToken } from '../utils/ids.js';
 import { HttpError, assertOrThrow } from '../utils/errors.js';
-import { createGameState, answerQuestion, advanceGame } from '../services/gameEngine.js';
+import { createGameState, currentQuestion, answerQuestion, advanceGame } from '../services/gameEngine.js';
 import { requireAuth } from '../middleware/auth.js';
 
 const createRoomSchema = z.object({
@@ -74,7 +74,7 @@ export function roomsRouter({ store, hub, config }) {
         role: 'host',
         connected: true,
         sessionToken
-      });
+      }, { maxPlayers: config.maxRoomPlayers, isExisting: false });
       const event = await store.addEvent(code, { type: 'system', playerId, payload: { text: `${body.displayName} created the room.` } });
       const snap = await snapshot(store, code);
       hub.publishRoomEvent(code, event).catch(() => {});
@@ -101,7 +101,6 @@ export function roomsRouter({ store, hub, config }) {
       const players = await store.listPlayers(code);
       const playerId = body.playerId || newPlayerId();
       const existing = players.find(p => p.playerId === playerId || p.displayName.toLowerCase() === body.displayName.toLowerCase());
-      if (!existing) assertOrThrow(players.length < room.maxPlayers, 409, 'Room is full.', 'room_full');
       const sessionToken = newSessionToken();
       const { sessionToken: tok, ...player } = await store.addPlayer(code, {
         playerId,
@@ -109,7 +108,7 @@ export function roomsRouter({ store, hub, config }) {
         role: room.hostPlayerId === playerId ? 'host' : 'guest',
         connected: true,
         sessionToken
-      });
+      }, { maxPlayers: room.maxPlayers, isExisting: !!existing });
       const event = await store.addEvent(code, { type: 'system', playerId, payload: { text: `${body.displayName} joined the room.` } });
       hub.publishRoomEvent(code, event).catch(() => {});
       res.json({ ok: true, sessionToken, player, ...(await snapshot(store, code)) });
@@ -162,7 +161,8 @@ export function roomsRouter({ store, hub, config }) {
       assertOrThrow(playerId === room.hostPlayerId, 403, 'Only the host can start this room.', 'host_required');
       const players = (await store.listPlayers(code)).filter(p => p.connected);
       assertOrThrow(players.length >= 2, 409, 'At least two connected players are required.', 'need_two_players');
-      const gameState = createGameState(players.map(p => p.playerId), room.mode);
+      const topic = String(req.body?.topic || '').trim().slice(0, 300);
+      const gameState = createGameState(players.map(p => p.playerId), room.mode, topic);
       await store.updateRoom(code, { status: 'active', gameState });
       const event = await store.addEvent(code, { type: 'system', playerId, payload: { text: 'Game started.' } });
       await hub.publishRoomEvent(code, event);
@@ -177,6 +177,12 @@ export function roomsRouter({ store, hub, config }) {
       const body = answerSchema.parse(req.body || {});
       const room = await store.getRoom(code);
       ensureRoomUsable(room);
+      const q = currentQuestion(room.gameState);
+      assertOrThrow(q, 409, 'No active question.', 'no_question');
+      assertOrThrow(
+        body.answerIdx >= 0 && body.answerIdx < (q.opts?.length ?? 0),
+        400, 'Invalid answer index.', 'invalid_answer_idx'
+      );
       const players = await store.listPlayers(code);
       // req.player.playerId is already verified to be in this room by auth middleware;
       // double-check in case the player was removed between the token check and this handler.
@@ -186,7 +192,8 @@ export function roomsRouter({ store, hub, config }) {
       let nextState = result.gameState;
       const qIdx = nextState.currentQuestionIdx;
       const answerCount = Object.keys(nextState.answers?.[String(qIdx)] || {}).length;
-      if (answerCount >= players.length) nextState = advanceGame(nextState);
+      const connectedCount = players.filter(p => p.connected !== false).length;
+      if (answerCount >= connectedCount) nextState = advanceGame(nextState);
       await store.updateRoom(code, { gameState: nextState, status: nextState.status === 'finished' ? 'ended' : 'active' });
       const event = await store.addEvent(code, { type: 'system', playerId: req.player.playerId, payload: { action: 'answer', correct: result.correct, questionIdx: qIdx } });
       await hub.publishRoomEvent(code, event);

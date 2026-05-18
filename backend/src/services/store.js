@@ -81,10 +81,13 @@ export class MemoryStore {
     return next;
   }
 
-  async addPlayer(code, player) {
+  async addPlayer(code, player, { maxPlayers, isExisting = false } = {}) {
     const room = await this.getRoom(code);
     if (!room) return null;
     const collection = this.players.get(code) || new Map();
+    if (!isExisting && maxPlayers !== undefined && collection.size >= maxPlayers) {
+      const err = new Error('Room is full.'); err.status = 409; err.code = 'room_full'; throw err;
+    }
     const now = new Date().toISOString();
     const next = {
       roomId: room.id,
@@ -207,7 +210,16 @@ export class SupabaseStore {
     return toRoom(data);
   }
 
-  async addPlayer(code, player) {
+  async addPlayer(code, player, { maxPlayers, isExisting = false } = {}) {
+    if (!isExisting && maxPlayers !== undefined) {
+      const { count, error: cntErr } = await this.supabase
+        .from('aria_room_players')
+        .select('*', { count: 'exact', head: true })
+        .eq('room_code', code);
+      if (!cntErr && count >= maxPlayers) {
+        const err = new Error('Room is full.'); err.status = 409; err.code = 'room_full'; throw err;
+      }
+    }
     const room = await this.getRoom(code);
     if (!room) return null;
     const row = {
@@ -221,7 +233,12 @@ export class SupabaseStore {
     };
     if (player.sessionToken) row.session_token = player.sessionToken;
     const { data, error } = await this.supabase.from('aria_room_players').upsert(row, { onConflict: 'room_id,player_id' }).select('*').single();
-    if (error) throw error;
+    if (error) {
+      if (error.code === 'P0001') {
+        const err = new Error('Room is full.'); err.status = 409; err.code = 'room_full'; throw err;
+      }
+      throw error;
+    }
     const sessionToken = data.session_token || player.sessionToken || null;
     return { ...toPlayer(data), sessionToken };
   }
